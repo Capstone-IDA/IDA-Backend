@@ -1,0 +1,22 @@
+# ida-backend 폴더에서
+cat > .gitignore << 'EOF'
+# Python
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# DB (런타임 생성)
+*.db
+*.db-wal
+*.db-shm
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+
+# OS
+.DS_Store
+Thumbs.db
+EOF
