@@ -1,15 +1,18 @@
-
-cat > .gitignore << 'EOF'
-# Python
+﻿# Python
 venv/
 __pycache__/
 *.pyc
 .pytest_cache/
 
-# DB (런타임 생성)
+# DB
 *.db
 *.db-wal
 *.db-shm
+
+# Models
+models/*.onnx
+models/*.pt
+models/*.pth
 
 # IDE
 .vscode/
@@ -19,4 +22,3 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
-EOF

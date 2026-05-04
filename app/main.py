@@ -4,6 +4,7 @@ IDA 시스템 - FastAPI 진입점
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Optional
@@ -18,6 +19,7 @@ from app.services.alert_manager import AlertManager
 from app.services.can_simulator import CANSimulator
 from app.services.driving_scorer import DrivingScorer
 from app.services.risk_evaluator import RiskEvaluator
+from app.services.vision.pipeline import InferencePipeline
 
 # 로깅 설정
 logging.basicConfig(
@@ -36,11 +38,15 @@ class AppState:
     scorer: DrivingScorer = field(default_factory=DrivingScorer)
     risk_evaluator: RiskEvaluator = field(default_factory=RiskEvaluator)
     alert_manager: AlertManager = field(default_factory=AlertManager)
+    pipeline: Optional[InferencePipeline] = field(default=None)
     active_session_id: Optional[str] = None
 
     def __post_init__(self):
         if self.repo is None:
             self.repo = LogRepository(self.db)
+        if self.pipeline is None:
+            model_path = os.getenv("IDA_MODEL_PATH", "models/best.onnx")
+            self.pipeline = InferencePipeline(model_path=model_path)
 
 
 # 전역 상태 인스턴스
@@ -50,7 +56,7 @@ app_state = AppState()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """서버 시작/종료 라이프사이클"""
-    # ── 시작 ──
+    # 시작
     logger.info("IDA 서버 시작 중...")
 
     # DB 연결 + 테이블 초기화
@@ -71,11 +77,22 @@ async def lifespan(app: FastAPI):
     # AlertManager 저장 콜백 연결
     app_state.alert_manager.set_save_callback(app_state.repo.save_notification)
 
+    # Vision pipeline 모델 로드
+    if app_state.pipeline:
+        loaded = app_state.pipeline.load()
+        if loaded:
+            logger.info("Vision pipeline 로드 완료")
+        else:
+            logger.warning(
+                "Vision pipeline 로드 실패 - 모델 파일 확인 필요 "
+                "(기본 경로: models/best.onnx, 환경변수 IDA_MODEL_PATH로 변경)"
+            )
+
     logger.info("IDA 서버 준비 완료")
 
-    yield  # ── 실행 중 ──
+    yield
 
-    # ── 종료 ──
+    # 종료
     logger.info("IDA 서버 종료 중...")
     app_state.can_simulator.stop()
     await app_state.db.disconnect()
@@ -99,7 +116,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── 라우터 등록 ──
+# 라우터 등록
 from app.routers.auth_router import router as auth_router
 from app.routers.detection_router import router as detection_router
 from app.routers.session_router import router as session_router
