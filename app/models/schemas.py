@@ -11,6 +11,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
+
 # ──────────────────────────────────────
 # 기본 데이터 구조
 # ──────────────────────────────────────
@@ -40,7 +41,38 @@ class ScenarioPreset(BaseModel):
     accel_profile: list[float]
     brake_profile: list[float]
     duration_sec: int
+# AI 응답 스키마
 
+class EgoMotion(BaseModel):
+    """자차 움직임"""
+    vx: float
+    vy: float
+
+
+class AIDetectedObject(BaseModel):
+    """AI 응답의 개별 탐지 객체"""
+    class_id: int
+    class_name: str
+    confidence: float = Field(..., ge=0, le=1)
+    bbox: BBox
+    track_id: int
+    depth_val: float = Field(..., ge=0)
+    bbox_area_ratio: float = Field(..., ge=0)
+    bbox_velocity_x: float
+    bbox_velocity_y: float
+    obj_speed_px: float = Field(..., ge=0)
+    is_moving: bool
+
+
+class AIDetectionResponse(BaseModel):
+    """AI 서버 응답"""
+    session_id: str
+    frame_id: int
+    frame_ref: str
+    timestamp: datetime
+    system: dict = Field(default_factory=dict)
+    ego_motion: EgoMotion
+    objects: list[AIDetectedObject] = Field(default_factory=list)
 
 # ──────────────────────────────────────
 # 영상 처리 & 객체 감지
@@ -230,12 +262,15 @@ class ErrorResponse(BaseModel):
 
 
 class DetectionApiResponse(BaseModel):
-    """POST /detect 전체 응답 (요구사항분석서 인터페이스 규격)"""
+    """POST /detect 전체 응답"""
+    session_id: Optional[str] = None
     frame_id: int
+    frame_ref: Optional[str] = None
     timestamp: datetime
     system: dict = Field(default_factory=dict)
     summary: dict = Field(default_factory=dict)
     can: Optional[CANSnapshot] = None
+    ego_motion: Optional[EgoMotion] = None
     objects: list[dict] = Field(default_factory=list)
     driving_events: list[dict] = Field(default_factory=list)
     alerts: list[dict] = Field(default_factory=list)

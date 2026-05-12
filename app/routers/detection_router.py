@@ -1,28 +1,32 @@
 """
 DetectionRouter
 POST /detect | GET /health
+AI 서버와 통신, BE에서 5프레임 주기 또는 CAN 이벤트 트리거로 점수 산출
 """
 
 import logging
+import os
 import time
 from datetime import datetime
 from typing import Optional
 
-import cv2
-import numpy as np
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
+from app.core.distance import classify_zone
 from app.models.schemas import (
+    AIDetectionResponse,
+    CANSnapshot,
     DetectionApiResponse,
     HealthStatus,
     ScoreRecord,
+    ScoringConfig,
 )
-from app.services.vision.depth_stub import DepthStub
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Detection"])
 
 _start_time = time.time()
+SCORE_INTERVAL = int(os.getenv("IDA_SCORE_INTERVAL", "5"))
 
 
 @router.post("/detect", response_model=DetectionApiResponse)
@@ -32,7 +36,7 @@ async def detect(
     frame_id: int = Form(default=0),
     timestamp: Optional[str] = Form(default=None),
 ):
-    """영상 프레임 수신 -> 추론 + 운전 평가 + DB 저장"""
+    """프레임 수신, AI 호출, 조건부 점수 산출"""
     from app.main import app_state
 
     session_id = app_state.active_session_id
@@ -43,33 +47,95 @@ async def detect(
         )
 
     ts = datetime.fromisoformat(timestamp) if timestamp else datetime.utcnow()
-
-    # 이미지 디코드
     image_bytes = await file.read()
-    nparr = np.frombuffer(image_bytes, np.uint8)
-    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-    decode_failed = frame is None
 
     # CAN 스냅샷
     can_snapshot = app_state.can_simulator.get_latest()
 
-    # 추론 (디코드 실패 시 빈 결과로 진행)
-    if decode_failed:
-        logger.warning(f"이미지 디코드 실패 (frame_id={frame_id})")
-        tracked_objects = []
-        inference_ms = 0.0
-        depth_executed = False
-    else:
-        tracked_objects, inference_ms, depth_executed = app_state.pipeline.process(
-            frame=frame,
-            risk_evaluator=app_state.risk_evaluator,
+    # AI 호출, 실패 시 빈 응답으로 진행 (CAN 기반 평가만)
+    ai_response: Optional[AIDetectionResponse] = None
+    if app_state.ai_client:
+        ai_response = await app_state.ai_client.detect(
+            session_id=session_id,
+            frame_id=frame_id,
+            image_bytes=image_bytes,
             can_snapshot=can_snapshot,
+            filename=file.filename or "frame.jpg",
+            content_type=file.content_type or "image/jpeg",
         )
 
-    max_risk = app_state.pipeline.get_worst_risk(tracked_objects)
+    ai_failed = ai_response is None
+    ai_objects = ai_response.objects if ai_response else []
+    ego_motion = ai_response.ego_motion if ai_response else None
+    inference_ms = (ai_response.system.get("inference_time_ms") if ai_response else 0.0) or 0.0
+    fps_val = (ai_response.system.get("fps") if ai_response else 0.0) or 0.0
+    frame_ref = ai_response.frame_ref if ai_response else f"frame_{frame_id}"
 
-    # CAN 데이터 저장 + 운전 이벤트 판정
+    # 객체별 위험도 평가
+    objects_response: list[dict] = []
+    max_risk = "safe"
+    worst_track_id: Optional[int] = None
+
+    for obj in ai_objects:
+        risk_level = app_state.risk_evaluator.assess(
+            track_id=obj.track_id,
+            depth=obj.depth_val,
+            can_data=can_snapshot,
+            is_moving=obj.is_moving,
+        )
+        if _risk_priority(risk_level) > _risk_priority(max_risk):
+            max_risk = risk_level
+            worst_track_id = obj.track_id
+
+        objects_response.append({
+            "class_id": obj.class_id,
+            "class_name": obj.class_name,
+            "confidence": round(obj.confidence, 3),
+            "bbox": obj.bbox.model_dump(),
+            "track_id": obj.track_id,
+            "depth_val": round(obj.depth_val, 3),
+            "bbox_area_ratio": round(obj.bbox_area_ratio, 4),
+            "bbox_velocity_x": round(obj.bbox_velocity_x, 3),
+            "bbox_velocity_y": round(obj.bbox_velocity_y, 3),
+            "obj_speed_px": round(obj.obj_speed_px, 3),
+            "is_moving": obj.is_moving,
+            "distance_zone": classify_zone(obj.depth_val),
+            "risk_level": risk_level,
+        })
+
+    # 탐지 로그 저장 (매 프레임)
+    log_id = await app_state.repo.save_detection(
+        session_id=session_id,
+        timestamp=ts,
+        frame_number=frame_id,
+        object_count=len(ai_objects),
+        fps=round(fps_val, 1),
+        inference_time_ms=round(inference_ms, 2),
+    )
+
+    for obj, obj_resp in zip(ai_objects, objects_response):
+        await app_state.repo.save_detected_object(
+            log_id=log_id,
+            track_id=obj.track_id,
+            class_name=obj.class_name,
+            confidence=obj.confidence,
+            bbox_x=obj.bbox.x,
+            bbox_y=obj.bbox.y,
+            bbox_w=obj.bbox.w,
+            bbox_h=obj.bbox.h,
+            depth_value=obj.depth_val,
+            distance_zone=classify_zone(obj.depth_val),
+            risk_level=obj_resp["risk_level"],
+        )
+
+    # 점수 산출 조건: 5프레임 주기 또는 CAN 이벤트 임계 도달
+    app_state.frame_counter += 1
+    cfg = app_state.scorer.config_cache
+    should_score = (
+        app_state.frame_counter % SCORE_INTERVAL == 0
+        or _is_can_event(can_snapshot, cfg)
+    )
+
     driving_events_out: list[dict] = []
     alerts_out: list[dict] = []
     can_id: Optional[int] = None
@@ -77,13 +143,7 @@ async def detect(
     if can_snapshot:
         can_id = await app_state.repo.save_can_data(session_id, can_snapshot)
 
-        # 가장 위험한 객체 기준 track_id
-        worst_track_id: Optional[int] = None
-        for t in tracked_objects:
-            if t.risk_level == max_risk and max_risk != "safe":
-                worst_track_id = t.track_id
-                break
-
+    if can_snapshot and should_score:
         event = app_state.risk_evaluator.evaluate_driving_event(
             session_id=session_id,
             can_data=can_snapshot,
@@ -118,7 +178,6 @@ async def detect(
                 "message": _event_message(event.event_type),
             })
 
-            # 등급 변동 시 알림
             if app_state.scorer.has_grade_changed():
                 grade = app_state.scorer.get_grade()
                 await app_state.alert_manager.on_grade_change(
@@ -132,67 +191,23 @@ async def detect(
                     "score": app_state.scorer.current_score,
                 })
 
-    # 탐지 로그 저장
-    fps = round(1000 / max(inference_ms, 1), 1)
-    log_id = await app_state.repo.save_detection(
-        session_id=session_id,
-        timestamp=ts,
-        frame_number=frame_id,
-        object_count=len(tracked_objects),
-        fps=fps,
-        inference_time_ms=round(inference_ms, 2),
-    )
-
-    # 탐지 객체 저장
-    for t in tracked_objects:
-        await app_state.repo.save_detected_object(
-            log_id=log_id,
-            track_id=t.track_id,
-            class_name=t.detection.class_name,
-            confidence=t.detection.confidence,
-            bbox_x=t.smoothed_bbox.x,
-            bbox_y=t.smoothed_bbox.y,
-            bbox_w=t.smoothed_bbox.w,
-            bbox_h=t.smoothed_bbox.h,
-            depth_value=t.depth,
-            distance_zone=DepthStub.classify_zone(t.depth),
-            risk_level=t.risk_level,
-        )
-
-    # 응답 구성
-    objects_response = [
-        {
-            "track_id": t.track_id,
-            "class_id": t.detection.class_id,
-            "class_name": t.detection.class_name,
-            "confidence": round(t.detection.confidence, 3),
-            "bbox": {
-                "x": round(t.smoothed_bbox.x, 4),
-                "y": round(t.smoothed_bbox.y, 4),
-                "w": round(t.smoothed_bbox.w, 4),
-                "h": round(t.smoothed_bbox.h, 4),
-            },
-            "depth": round(t.depth, 3),
-            "distance_zone": DepthStub.classify_zone(t.depth),
-            "risk_level": t.risk_level,
-        }
-        for t in tracked_objects
-    ]
-
     return DetectionApiResponse(
+        session_id=session_id,
         frame_id=frame_id,
+        frame_ref=frame_ref,
         timestamp=ts,
         system={
-            "inference_ms": round(inference_ms, 2),
-            "fps": fps,
-            "depth_executed": depth_executed,
-            "model_loaded": app_state.pipeline.is_loaded,
+            "inference_time_ms": round(inference_ms, 2),
+            "fps": round(fps_val, 1),
+            "ai_ok": not ai_failed,
         },
         summary={
-            "object_count": len(tracked_objects),
+            "object_count": len(ai_objects),
             "max_risk_level": max_risk.upper(),
+            "score_triggered": should_score,
         },
         can=can_snapshot,
+        ego_motion=ego_motion,
         objects=objects_response,
         driving_events=driving_events_out,
         alerts=alerts_out,
@@ -201,12 +216,10 @@ async def detect(
             "grade": app_state.scorer.get_grade(),
         },
         error=(
-            None
-            if not decode_failed
-            else {
-                "error_type": "image_decode_failed",
+            None if not ai_failed else {
+                "error_type": "ai_unavailable",
                 "severity": "warning",
-                "message": "이미지 디코드 실패 - 객체 탐지를 건너뛰고 CAN 기반 평가만 수행",
+                "message": "AI 서버 응답 실패, CAN 기반 평가만 수행",
             }
         ),
     )
@@ -214,16 +227,34 @@ async def detect(
 
 @router.get("/health", response_model=HealthStatus)
 async def health():
-    """서버 상태 확인"""
+    """서버 상태"""
     from app.main import app_state
     db_ok = app_state.db.connection is not None
-    model_ok = bool(app_state.pipeline and app_state.pipeline.is_loaded)
+    ai_ok = await app_state.ai_client.ping() if app_state.ai_client else False
     return HealthStatus(
-        status="healthy" if db_ok else "degraded",
-        model_loaded=model_ok,
+        status="healthy" if db_ok and ai_ok else "degraded",
+        model_loaded=ai_ok,
         db_connected=db_ok,
         uptime_seconds=round(time.time() - _start_time, 1),
     )
+
+
+def _risk_priority(level: str) -> int:
+    return {"danger": 3, "warning": 2, "safe": 1}.get(level, 0)
+
+
+def _is_can_event(can_snapshot: Optional[CANSnapshot],
+                  cfg: Optional[ScoringConfig]) -> bool:
+    """CAN 이벤트 임계 도달 여부"""
+    if not can_snapshot or not cfg:
+        return False
+    if can_snapshot.acceleration >= cfg.accel_threshold:
+        return True
+    if can_snapshot.acceleration <= -cfg.brake_threshold:
+        return True
+    if can_snapshot.speed_kmh >= cfg.speed_limit:
+        return True
+    return False
 
 
 def _event_message(event_type: str) -> str:

@@ -27,10 +27,15 @@ class RiskEvaluator:
         self.config = config
         self.danger_threshold = config.proximity_distance
 
-    def assess(self, tracked_obj: TrackedObject,
-               depth: float,
-               can_data: Optional[CANSnapshot] = None) -> str:
-        """객체별 위험도 평가 → risk_level 반환"""
+    def assess(self, track_id: int, depth: float,
+           can_data: Optional[CANSnapshot] = None,
+           is_moving: bool = True) -> str:
+        """객체별 위험도 평가, 정적 객체는 평가 제외"""
+        # 정적 객체는 위험도 평가 제외 (결함 #3 대응)
+        if not is_moving:
+            self.reset_counter(track_id)
+            return "safe"
+
         # 거리 기반 위험도 구간화
         if depth <= self.danger_threshold:
             risk_level = "danger"
@@ -40,7 +45,6 @@ class RiskEvaluator:
             risk_level = "safe"
 
         # 연속 Danger 카운트
-        track_id = tracked_obj.track_id
         if risk_level == "danger":
             self.consecutive_danger[track_id] = \
                 self.consecutive_danger.get(track_id, 0) + 1
