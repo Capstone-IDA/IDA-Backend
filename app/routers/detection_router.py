@@ -1,7 +1,7 @@
 """
 DetectionRouter
 POST /detect | GET /health
-AI 서버와 통신, BE에서 5프레임 주기 또는 CAN 이벤트 트리거로 점수 산출
+AI 서버가 보낸 추론 결과를 받아 점수 산출
 """
 
 import logging
@@ -10,11 +10,11 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, HTTPException
 
 from app.core.distance import classify_zone
 from app.models.schemas import (
-    AIDetectionResponse,
+    AIDetectionPayload,
     CANSnapshot,
     DetectionApiResponse,
     HealthStatus,
@@ -30,53 +30,38 @@ SCORE_INTERVAL = int(os.getenv("IDA_SCORE_INTERVAL", "5"))
 
 
 @router.post("/detect", response_model=DetectionApiResponse)
-async def detect(
-    file: UploadFile = File(...),
-    camera_id: str = Form(default="1"),
-    frame_id: int = Form(default=0),
-    timestamp: Optional[str] = Form(default=None),
-):
-    """프레임 수신, AI 호출, 조건부 점수 산출"""
+async def detect(payload: AIDetectionPayload):
+    """AI 추론 결과 수신, 조건부 점수 산출"""
     from app.main import app_state
 
-    session_id = app_state.active_session_id
-    if not session_id:
+    # 활성 세션 확인
+    active_session = app_state.active_session_id
+    if not active_session:
         raise HTTPException(
             status_code=400,
             detail="활성 세션이 없습니다. /session/start를 먼저 호출하세요.",
         )
 
-    ts = datetime.fromisoformat(timestamp) if timestamp else datetime.utcnow()
-    image_bytes = await file.read()
-
-    # CAN 스냅샷
-    can_snapshot = app_state.can_simulator.get_latest()
-
-    # AI 호출, 실패 시 빈 응답으로 진행 (CAN 기반 평가만)
-    ai_response: Optional[AIDetectionResponse] = None
-    if app_state.ai_client:
-        ai_response = await app_state.ai_client.detect(
-            session_id=session_id,
-            frame_id=frame_id,
-            image_bytes=image_bytes,
-            can_snapshot=can_snapshot,
-            filename=file.filename or "frame.jpg",
-            content_type=file.content_type or "image/jpeg",
+    # session_id 불일치는 경고만, BE 세션을 신뢰
+    if payload.session_id != active_session:
+        logger.warning(
+            f"session_id 불일치: payload={payload.session_id}, "
+            f"active={active_session}"
         )
+    session_id = active_session
 
-    ai_failed = ai_response is None
-    ai_objects = ai_response.objects if ai_response else []
-    ego_motion = ai_response.ego_motion if ai_response else None
-    inference_ms = (ai_response.system.get("inference_time_ms") if ai_response else 0.0) or 0.0
-    fps_val = (ai_response.system.get("fps") if ai_response else 0.0) or 0.0
-    frame_ref = ai_response.frame_ref if ai_response else f"frame_{frame_id}"
+    # timestamp 안전 파싱
+    ts = _parse_timestamp(payload.timestamp)
+
+    # CAN 스냅샷 (BE가 자체 보유)
+    can_snapshot = app_state.can_simulator.get_latest()
 
     # 객체별 위험도 평가
     objects_response: list[dict] = []
     max_risk = "safe"
     worst_track_id: Optional[int] = None
 
-    for obj in ai_objects:
+    for obj in payload.objects:
         risk_level = app_state.risk_evaluator.assess(
             track_id=obj.track_id,
             depth=obj.depth_val,
@@ -107,13 +92,13 @@ async def detect(
     log_id = await app_state.repo.save_detection(
         session_id=session_id,
         timestamp=ts,
-        frame_number=frame_id,
-        object_count=len(ai_objects),
-        fps=round(fps_val, 1),
-        inference_time_ms=round(inference_ms, 2),
+        frame_number=payload.frame_id,
+        object_count=len(payload.objects),
+        fps=round(payload.fps, 1),
+        inference_time_ms=round(payload.inference_time_ms, 2),
     )
 
-    for obj, obj_resp in zip(ai_objects, objects_response):
+    for obj, obj_resp in zip(payload.objects, objects_response):
         await app_state.repo.save_detected_object(
             log_id=log_id,
             track_id=obj.track_id,
@@ -193,21 +178,20 @@ async def detect(
 
     return DetectionApiResponse(
         session_id=session_id,
-        frame_id=frame_id,
-        frame_ref=frame_ref,
+        frame_id=payload.frame_id,
+        frame_ref=f"frame_{payload.frame_id}",
         timestamp=ts,
         system={
-            "inference_time_ms": round(inference_ms, 2),
-            "fps": round(fps_val, 1),
-            "ai_ok": not ai_failed,
+            "inference_time_ms": round(payload.inference_time_ms, 2),
+            "fps": round(payload.fps, 1),
         },
         summary={
-            "object_count": len(ai_objects),
+            "object_count": len(payload.objects),
             "max_risk_level": max_risk.upper(),
             "score_triggered": should_score,
         },
         can=can_snapshot,
-        ego_motion=ego_motion,
+        ego_motion=payload.ego_motion,
         objects=objects_response,
         driving_events=driving_events_out,
         alerts=alerts_out,
@@ -215,13 +199,7 @@ async def detect(
             "current_score": app_state.scorer.current_score,
             "grade": app_state.scorer.get_grade(),
         },
-        error=(
-            None if not ai_failed else {
-                "error_type": "ai_unavailable",
-                "severity": "warning",
-                "message": "AI 서버 응답 실패, CAN 기반 평가만 수행",
-            }
-        ),
+        error=None,
     )
 
 
@@ -230,13 +208,22 @@ async def health():
     """서버 상태"""
     from app.main import app_state
     db_ok = app_state.db.connection is not None
-    ai_ok = await app_state.ai_client.ping() if app_state.ai_client else False
     return HealthStatus(
-        status="healthy" if db_ok and ai_ok else "degraded",
-        model_loaded=ai_ok,
+        status="healthy" if db_ok else "degraded",
+        model_loaded=True,
         db_connected=db_ok,
         uptime_seconds=round(time.time() - _start_time, 1),
     )
+
+
+def _parse_timestamp(ts_str: str) -> datetime:
+    """ISO 8601 안전 파싱, 실패 시 현재 시각"""
+    try:
+        # 'Z' 접미사를 Python이 이해하는 형식으로
+        normalized = ts_str.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized)
+    except (ValueError, AttributeError):
+        return datetime.utcnow()
 
 
 def _risk_priority(level: str) -> int:

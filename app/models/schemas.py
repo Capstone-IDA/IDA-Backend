@@ -44,19 +44,20 @@ class ScenarioPreset(BaseModel):
 # AI 응답 스키마
 
 class EgoMotion(BaseModel):
-    """자차 움직임"""
+    """자차 움직임 (옵티컬 플로우 기반)"""
     vx: float
     vy: float
+    speed: float = 0.0
 
 
 class AIDetectedObject(BaseModel):
-    """AI 응답의 개별 탐지 객체"""
+    """AI가 보낸 개별 탐지 객체"""
     class_id: int
     class_name: str
     confidence: float = Field(..., ge=0, le=1)
     bbox: BBox
     track_id: int
-    depth_val: float = Field(..., ge=0)
+    depth_val: float = Field(..., ge=0, le=1.5)
     bbox_area_ratio: float = Field(..., ge=0)
     bbox_velocity_x: float
     bbox_velocity_y: float
@@ -64,15 +65,15 @@ class AIDetectedObject(BaseModel):
     is_moving: bool
 
 
-class AIDetectionResponse(BaseModel):
-    """AI 서버 응답"""
-    session_id: str
+class AIDetectionPayload(BaseModel):
+    """AI가 BE의 /detect로 보내는 페이로드"""
     frame_id: int
-    frame_ref: str
-    timestamp: datetime
-    system: dict = Field(default_factory=dict)
-    ego_motion: EgoMotion
+    timestamp: str
+    fps: float
+    inference_time_ms: float
+    session_id: str
     objects: list[AIDetectedObject] = Field(default_factory=list)
+    ego_motion: EgoMotion
 
 # ──────────────────────────────────────
 # 영상 처리 & 객체 감지
