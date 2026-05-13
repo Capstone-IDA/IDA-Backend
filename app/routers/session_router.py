@@ -52,8 +52,12 @@ async def start_session(req: SessionStartRequest):
     if req.scenario:
         try:
             app_state.can_simulator.load_scenario(req.scenario)
+            app_state.can_simulator.start() 
         except ValueError:
             pass  # 알 수 없는 시나리오는 무시
+        
+    # 프레임 카운터 리셋
+    app_state.frame_counter = 0 
 
     return SessionStartResponse(
         session_id=session_id,
@@ -104,6 +108,9 @@ async def end_session(req: SessionEndRequest):
     # 활성 세션 해제
     if app_state.active_session_id == req.session_id:
         app_state.active_session_id = None
+
+    app_state.active_session_id = None         
+    app_state.frame_counter = 0 
 
     return {
         "session_id": req.session_id,
