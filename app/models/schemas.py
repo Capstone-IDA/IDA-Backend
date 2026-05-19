@@ -348,3 +348,58 @@ class AccountCreateRequest(BaseModel):
     company_name: Optional[str] = None
     contact: Optional[str] = None
     notification_endpoint: Optional[str] = None
+
+
+# ──────────────────────────────────────
+# WebSocket 메시지 (/ws/detect)
+# ──────────────────────────────────────
+
+class WSDetectionPayload(BaseModel):
+    """클라이언트가 보내는 detection 메시지 (session_id는 path에서 받음)"""
+    type: str = Field(default="detection")
+    frame_id: int
+    timestamp: str
+    fps: float = Field(..., ge=0)
+    inference_time_ms: float = Field(..., ge=0)
+    ego_motion: EgoMotion
+    objects: list[AIDetectedObject] = Field(default_factory=list)
+
+
+class WSConnectedMessage(BaseModel):
+    """핸드셰이크 직후 서버 발송"""
+    type: str = Field(default="connected")
+    session_id: str
+    server_time: str
+
+
+class WSDrivingEventMessage(BaseModel):
+    """운전 이벤트 발생 시 서버 발송"""
+    type: str = Field(default="driving_event")
+    frame_id: int
+    timestamp: str
+    event: dict
+    score: dict
+
+
+class WSGradeChangeMessage(BaseModel):
+    """등급 변동 시 서버 발송"""
+    type: str = Field(default="grade_change")
+    frame_id: int
+    timestamp: str
+    grade: str
+    previous_grade: str
+    score: float
+
+
+class WSErrorMessage(BaseModel):
+    """에러 메시지"""
+    type: str = Field(default="error")
+    code: str
+    message: str
+
+
+class WSSessionClosedMessage(BaseModel):
+    """session_end에 대한 응답"""
+    type: str = Field(default="session_closed")
+    final_score: float
+    report_id: Optional[int] = None

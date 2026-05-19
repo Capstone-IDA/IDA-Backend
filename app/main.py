@@ -102,6 +102,7 @@ from app.routers.config_router import router as config_router
 from app.routers.log_router import router as log_router
 from app.routers.company_router import router as company_router
 from app.routers.admin_router import router as admin_router
+from app.routers.websocket import router as websocket_router
 
 app.include_router(auth_router)
 app.include_router(detection_router)
@@ -114,6 +115,7 @@ app.include_router(config_router)
 app.include_router(log_router)
 app.include_router(company_router)
 app.include_router(admin_router)
+app.include_router(websocket_router)
 
 
 @app.get("/")

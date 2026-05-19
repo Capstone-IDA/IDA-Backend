@@ -6,6 +6,7 @@ pytest + httpx AsyncClient 기반
 
 import asyncio
 import os
+from datetime import datetime
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -180,14 +181,33 @@ async def test_session_lifecycle(client: AsyncClient):
     assert r.status_code == 200
     await asyncio.sleep(0.5)  # 데이터 생성 대기
 
-    # 4-3. /detect 호출 (프레임 전송)
-    fake_image = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100  # 가짜 이미지
-    r = await client.post("/detect", files={
-        "file": ("frame.png", fake_image, "image/png"),
-    }, data={
-        "frame_id": "1",
-        "camera_id": "1",
-    })
+    # 4-3. /detect 호출 (AI 추론 결과 JSON 송신)
+    def _build_payload(frame_id: int) -> dict:
+        return {
+            "frame_id": frame_id,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "fps": 30.0,
+            "inference_time_ms": 25.0,
+            "session_id": session_id,
+            "ego_motion": {"vx": 0.0, "vy": 0.0, "speed": 0.0},
+            "objects": [
+                {
+                    "track_id": 1,
+                    "class_id": 14,
+                    "class_name": "Vehicle",
+                    "confidence": 0.9,
+                    "bbox": {"x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2},
+                    "depth_val": 0.1,
+                    "bbox_area_ratio": 0.04,
+                    "bbox_velocity_x": 0.01,
+                    "bbox_velocity_y": 0.0,
+                    "obj_speed_px": 0.01,
+                    "is_moving": True,
+                }
+            ],
+        }
+
+    r = await client.post("/detect", json=_build_payload(1))
     assert r.status_code == 200
     detect_data = r.json()
     assert detect_data["frame_id"] == 1
@@ -197,9 +217,7 @@ async def test_session_lifecycle(client: AsyncClient):
     # 여러 프레임 전송
     for i in range(2, 6):
         await asyncio.sleep(0.15)
-        r = await client.post("/detect", files={
-            "file": ("frame.png", fake_image, "image/png"),
-        }, data={"frame_id": str(i)})
+        r = await client.post("/detect", json=_build_payload(i))
         assert r.status_code == 200
 
     # 4-4. 점수 조회
@@ -259,9 +277,14 @@ async def test_detect_no_session(client: AsyncClient):
     from app.main import app_state
     app_state.active_session_id = None
 
-    fake_image = b"\x89PNG" + b"\x00" * 50
-    r = await client.post("/detect", files={
-        "file": ("f.png", fake_image, "image/png"),
+    r = await client.post("/detect", json={
+        "frame_id": 1,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "fps": 30.0,
+        "inference_time_ms": 25.0,
+        "session_id": "no_session",
+        "ego_motion": {"vx": 0.0, "vy": 0.0, "speed": 0.0},
+        "objects": [],
     })
     assert r.status_code == 400
 
