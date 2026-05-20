@@ -350,6 +350,38 @@ class AccountCreateRequest(BaseModel):
     notification_endpoint: Optional[str] = None
 
 
+class VehicleCreateRequest(BaseModel):
+    """차량 등록 요청"""
+    plate_number: str
+    model: Optional[str] = None
+    company_id: Optional[str] = Field(default=None, description="Admin 전용. Company 계정은 자기 업체로 자동 설정")
+
+
+class VehicleInfo(BaseModel):
+    """차량 정보 응답"""
+    vehicle_id: str
+    plate_number: Optional[str] = None
+    model: Optional[str] = None
+    company_id: Optional[str] = None
+    company_name: Optional[str] = None
+
+
+class CustomerCreateRequest(BaseModel):
+    """고객 등록 요청"""
+    name: str
+    phone: Optional[str] = None
+    company_id: Optional[str] = Field(default=None, description="Admin 전용. Company 계정은 자기 업체로 자동 설정")
+
+
+class CustomerInfo(BaseModel):
+    """고객 정보 응답"""
+    user_id: str
+    name: str
+    phone: Optional[str] = None
+    company_id: Optional[str] = None
+    company_name: Optional[str] = None
+    created_at: Optional[str] = None
+
 # ──────────────────────────────────────
 # WebSocket 메시지 (/ws/detect)
 # ──────────────────────────────────────

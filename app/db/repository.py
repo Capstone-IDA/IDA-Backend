@@ -627,6 +627,79 @@ class LogRepository:
             "SELECT * FROM companies ORDER BY name"
         )
 
+    # Vehicles
+
+    async def create_vehicle(self, vehicle_id: str, plate_number: str,
+                             model: Optional[str], company_id: Optional[str]) -> int:
+        """차량 신규 등록"""
+        return await self.db.execute(
+            """INSERT INTO vehicles (vehicle_id, plate_number, model, company_id)
+               VALUES (?, ?, ?, ?)""",
+            (vehicle_id, plate_number, model, company_id)
+        )
+
+    async def get_vehicle_by_id(self, vehicle_id: str) -> Optional[dict]:
+        """vehicle_id 단건 조회"""
+        return await self.db.fetch_one(
+            "SELECT * FROM vehicles WHERE vehicle_id = ?", (vehicle_id,)
+        )
+
+    async def get_vehicles_by_company(self, company_id: Optional[str] = None,
+                                      limit: int = 100) -> list[dict]:
+        """업체별 차량 목록 (company_id=None이면 전체)"""
+        query = """
+            SELECT v.*, c.name as company_name
+            FROM vehicles v
+            LEFT JOIN companies c ON v.company_id = c.company_id
+            WHERE 1=1
+        """
+        params: list = []
+        if company_id:
+            query += " AND v.company_id = ?"
+            params.append(company_id)
+        query += " ORDER BY v.vehicle_id DESC LIMIT ?"
+        params.append(limit)
+        return await self.db.fetch_all(query, tuple(params))
+
+    # Users (고객)
+
+    async def create_user(self, user_id: str, name: str,
+                          phone: Optional[str], company_id: Optional[str]) -> int:
+        """고객 신규 등록"""
+        return await self.db.execute(
+            """INSERT INTO users (user_id, name, phone, company_id)
+               VALUES (?, ?, ?, ?)""",
+            (user_id, name, phone, company_id)
+        )
+
+    async def get_user_by_id(self, user_id: str) -> Optional[dict]:
+        """user_id 단건 조회"""
+        return await self.db.fetch_one(
+            """SELECT u.*, c.name as company_name
+               FROM users u
+               LEFT JOIN companies c ON u.company_id = c.company_id
+               WHERE u.user_id = ?""",
+            (user_id,)
+        )
+
+    async def get_users_by_company(self, company_id: Optional[str] = None,
+                                   limit: int = 100) -> list[dict]:
+        """업체별 고객 목록"""
+        query = """
+            SELECT u.*, c.name as company_name
+            FROM users u
+            LEFT JOIN companies c ON u.company_id = c.company_id
+            WHERE 1=1
+        """
+        params: list = []
+        if company_id:
+            query += " AND u.company_id = ?"
+            params.append(company_id)
+        query += " ORDER BY u.created_at DESC LIMIT ?"
+        params.append(limit)
+        return await self.db.fetch_all(query, tuple(params))
+
+
     # ══════════════════════════════════════
     # 업체별 필터링 조회 (CompanyDashboard + AdminDashboard)
     # ══════════════════════════════════════

@@ -90,7 +90,9 @@ class DatabaseManager:
             user_id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             phone TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            company_id TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (company_id) REFERENCES companies(company_id)
         );
 
         -- 차량
@@ -311,6 +313,12 @@ class DatabaseManager:
         async with self.lock:
             await self.connection.executescript(schema)
             await self.connection.commit()
+
+        # 기존 DB 호환: users.company_id 컬럼이 없으면 추가
+        user_cols = await self.fetch_all("PRAGMA table_info(users)")
+        if not any(c["name"] == "company_id" for c in user_cols):
+            await self.execute("ALTER TABLE users ADD COLUMN company_id TEXT")
+            logger.info("users 테이블에 company_id 컬럼 추가됨")
 
         # 기본 스코어링 설정 삽입 (없을 때만)
         existing = await self.fetch_one("SELECT config_id FROM scoring_config LIMIT 1")

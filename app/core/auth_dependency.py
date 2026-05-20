@@ -3,11 +3,12 @@ auth_dependency
 FastAPI Depends로 토큰 추출 + 역할 검증
 """
 
-from typing import Optional
-
-from fastapi import Depends, HTTPException, Header
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.services.auth_service import decode_token
+
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 class AuthContext:
@@ -38,18 +39,13 @@ class AuthContext:
 
 
 async def get_current_user(
-    authorization: Optional[str] = Header(None),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
 ) -> AuthContext:
-    """토큰에서 현재 사용자 추출 (모든 인증 필요 엔드포인트에 사용)"""
-    if not authorization:
+    """토큰에서 현재 사용자 추출"""
+    if not credentials:
         raise HTTPException(status_code=401, detail="인증 토큰이 필요합니다")
 
-    # "Bearer <token>" 형태
-    token = authorization
-    if token.startswith("Bearer "):
-        token = token[7:]
-
-    payload = decode_token(token)
+    payload = decode_token(credentials.credentials)
     if not payload:
         raise HTTPException(status_code=401, detail="유효하지 않거나 만료된 토큰입니다")
 
@@ -58,7 +54,6 @@ async def get_current_user(
         role=payload["role"],
         company_id=payload.get("company_id"),
     )
-
 
 async def require_admin(
     auth: AuthContext = Depends(get_current_user),
