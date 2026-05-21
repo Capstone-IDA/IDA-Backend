@@ -3,6 +3,7 @@ auth_dependency
 FastAPI Depends로 토큰 추출 + 역할 검증
 """
 
+from typing import Optional
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 

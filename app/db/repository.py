@@ -794,6 +794,24 @@ class LogRepository:
         params.append(limit)
         return await self.db.fetch_all(query, tuple(params))
 
+    async def get_scores_by_company(self, company_id: Optional[str] = None,
+                                    limit: int = 100) -> list[dict]:
+        """업체별 점수 이력"""
+        query = """
+            SELECT sh.*, v.company_id
+            FROM score_history sh
+            JOIN driving_sessions ds ON sh.session_id = ds.session_id
+            JOIN vehicles v ON ds.vehicle_id = v.vehicle_id
+            WHERE 1=1
+        """
+        params: list = []
+        if company_id:
+            query += " AND v.company_id = ?"
+            params.append(company_id)
+        query += " ORDER BY sh.score_id DESC LIMIT ?"
+        params.append(limit)
+        return await self.db.fetch_all(query, tuple(params))
+
     async def get_notifications_by_company(self, company_id: Optional[str] = None,
                                            limit: int = 50) -> list[dict]:
         """업체별 알림 이력"""
@@ -835,6 +853,24 @@ class LogRepository:
                 JOIN vehicles v ON ds.vehicle_id = v.vehicle_id
                 WHERE bl.is_active = 1{w}""", tuple(p))
 
+        # 차량/고객 카운트 (등록 결과 시각화용)
+        vehicle_row = await self.db.fetch_one(
+            f"SELECT COUNT(*) as cnt FROM vehicles v WHERE 1=1{w}", tuple(p))
+        w_u, p_u = _where("u")
+        customer_row = await self.db.fetch_one(
+            f"SELECT COUNT(*) as cnt FROM users u WHERE 1=1{w_u}", tuple(p_u))
+
+        return {
+            "active_sessions": active["cnt"] if active else 0,
+            "total_sessions": total["cnt"] if total else 0,
+            "avg_final_score": round(avg_row["avg_score"] or 0, 1) if avg_row else 0,
+            "total_events": events["cnt"] if events else 0,
+            "blacklist_count": bl_count["cnt"] if bl_count else 0,
+            "vehicle_count": vehicle_row["cnt"] if vehicle_row else 0,
+            "customer_count": customer_row["cnt"] if customer_row else 0,
+        }
+
+        
         return {
             "active_sessions": active["cnt"] if active else 0,
             "total_sessions": total["cnt"] if total else 0,
