@@ -89,10 +89,7 @@ def test_ws_session_id_mismatch(ws_client: TestClient):
 
 
 def test_ws_no_active_session(ws_client: TestClient):
-    """활성 세션이 None인 상태에서 연결 시 1008"""
-    from app.main import app_state
-    app_state.active_session_id = None
-
+    """존재하지 않는 session_id로 연결 시 1008"""
     with pytest.raises(WebSocketDisconnect) as exc:
         with ws_client.websocket_connect("/ws/detect/sess_any") as ws:
             ws.receive_json()
@@ -146,10 +143,11 @@ def test_ws_detection_to_event_push(ws_client: TestClient):
     # scenario 미지정 — simulator 비활성 상태에서 buffer만 직접 제어
     session_id = _start_session(ws_client, "u_event")
 
-    # simulator stop + buffer 초기화 + 임계 도달 스냅샷만 주입 (deterministic)
-    app_state.can_simulator.stop()
-    app_state.can_simulator.buffer.clear()
-    app_state.can_simulator.buffer.append(CANSnapshot(
+    # 세션 컨텍스트의 simulator stop + buffer 초기화 + 임계 도달 스냅샷 주입 (deterministic)
+    ctx = app_state.sessions[session_id]
+    ctx.can_simulator.stop()
+    ctx.can_simulator.buffer.clear()
+    ctx.can_simulator.buffer.append(CANSnapshot(
         timestamp=datetime.utcnow(),
         speed_kmh=20.0,
         acceleration=4.5,  # accel_threshold(2.0) 초과

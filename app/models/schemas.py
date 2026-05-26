@@ -219,6 +219,7 @@ class ScoringConfig(BaseModel):
     orange_min: int = Field(default=30)
     blacklist_threshold: int = Field(default=30, description="블랙리스트 편입 기준 점수")
     alert_min_interval_sec: int = Field(default=30, description="알림 최소 간격 (초)")
+    event_cooldown_sec: float = Field(default=3.0, description="동일 유형 이벤트 재카운트 방지 쿨다운 (초)")
     updated_at: Optional[datetime] = None
     updated_by: Optional[str] = None
 
@@ -232,6 +233,7 @@ class SessionStartRequest(BaseModel):
     user_id: str
     vehicle_id: str
     scenario: Optional[str] = None
+    rental_id: Optional[str] = None
 
 
 class SessionStartResponse(BaseModel):
@@ -294,6 +296,7 @@ class ConfigUpdateRequest(BaseModel):
     orange_min: Optional[int] = None
     blacklist_threshold: Optional[int] = None
     alert_min_interval_sec: Optional[int] = None
+    event_cooldown_sec: Optional[float] = None
     updated_by: Optional[str] = None
 
 
@@ -435,3 +438,17 @@ class WSSessionClosedMessage(BaseModel):
     type: str = Field(default="session_closed")
     final_score: float
     report_id: Optional[int] = None
+
+
+class WSFrameResultMessage(BaseModel):
+    """매 프레임 처리 결과 (FE 대시보드 push 전용)"""
+    type: str = Field(default="frame_result")
+    session_id: str
+    frame_id: int
+    timestamp: str
+    objects: list[dict] = Field(default_factory=list)
+    max_risk_level: str = "SAFE"
+    can: Optional[CANSnapshot] = None
+    driving_events: list[dict] = Field(default_factory=list)
+    alerts: list[dict] = Field(default_factory=list)
+    score: dict = Field(default_factory=dict)

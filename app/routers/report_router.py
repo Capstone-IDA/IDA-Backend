@@ -3,6 +3,8 @@ ReportRouter
 POST /report/{session_id} | GET /report/{session_id} | GET /reports/{user_id}
 """
 
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException
 
 from app.models.schemas import RentalReport
@@ -34,7 +36,7 @@ async def get_report(session_id: str):
 
 
 @router.get("/reports/{user_id}")
-async def get_user_reports(user_id: str):
-    """사용자별 리포트 목록"""
+async def get_user_reports(user_id: str, rental_id: Optional[str] = None):
+    """사용자별 리포트 목록. rental_id 쿼리 지정 시 해당 렌트 건만."""
     from app.main import app_state
-    return await app_state.repo.get_reports_by_user(user_id)
+    return await app_state.repo.get_reports_by_user(user_id, rental_id)

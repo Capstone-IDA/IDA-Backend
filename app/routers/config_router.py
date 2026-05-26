@@ -28,13 +28,15 @@ async def update_config(req: ConfigUpdateRequest):
     if update_data:
         await app_state.repo.update_config(update_data, changed_by=changed_by)
 
-        # 캐시 갱신
+        # 캐시 갱신: 공유 컴포넌트 + 모든 활성 세션
         new_config = await app_state.repo.get_config()
         if new_config:
             cfg = ScoringConfig(**{k: v for k, v in new_config.items() if k in ScoringConfig.model_fields})
-            app_state.scorer.reload_config(cfg)
+            app_state.config = cfg
             app_state.risk_evaluator.reload_config(cfg)
             app_state.alert_manager.min_interval_sec = cfg.alert_min_interval_sec
+            for ctx in app_state.sessions.values():
+                ctx.scorer.reload_config(cfg)
 
     return await app_state.repo.get_config()
 
@@ -45,11 +47,13 @@ async def reset_config():
     from app.main import app_state
     result = await app_state.repo.reset_config()
 
-    # 캐시 갱신
+    # 캐시 갱신: 공유 컴포넌트 + 모든 활성 세션
     if result:
         cfg = ScoringConfig(**{k: v for k, v in result.items() if k in ScoringConfig.model_fields})
-        app_state.scorer.reload_config(cfg)
+        app_state.config = cfg
         app_state.risk_evaluator.reload_config(cfg)
         app_state.alert_manager.min_interval_sec = cfg.alert_min_interval_sec
+        for ctx in app_state.sessions.values():
+            ctx.scorer.reload_config(cfg)
 
     return result

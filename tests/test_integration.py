@@ -39,7 +39,7 @@ async def client():
         config_row = await app_state.repo.get_config()
         if config_row:
             cfg = ScoringConfig(**{k: v for k, v in config_row.items() if k in ScoringConfig.model_fields})
-            app_state.scorer.reload_config(cfg)
+            app_state.config = cfg
             app_state.risk_evaluator.reload_config(cfg)
             app_state.alert_manager.min_interval_sec = cfg.alert_min_interval_sec
         app_state.alert_manager.set_save_callback(app_state.repo.save_notification)
@@ -47,7 +47,9 @@ async def client():
         yield ac
 
         # 정리
-        app_state.can_simulator.stop()
+        for ctx in list(app_state.sessions.values()):
+            ctx.can_simulator.stop()
+        app_state.sessions.clear()
         await app_state.db.disconnect()
         if os.path.exists("test_ida.db"):
             os.remove("test_ida.db")
@@ -131,30 +133,40 @@ async def test_can_scenarios(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_can_start_stop(client: AsyncClient):
-    """POST /can/start, /can/stop"""
-    r = await client.post("/can/start/normal")
+    """POST /can/{sid}/start, /can/{sid}/stop"""
+    rs = await client.post("/session/start", json={
+        "user_id": "u_can", "vehicle_id": "v_can"})
+    sid = rs.json()["session_id"]
+
+    r = await client.post(f"/can/{sid}/start/normal")
     assert r.status_code == 200
     assert r.json()["status"] == "started"
 
     # 데이터 생성 대기
     await asyncio.sleep(0.3)
 
-    r = await client.get("/can/data")
+    r = await client.get(f"/can/{sid}/data")
     assert r.status_code == 200
     data = r.json()
     assert "speed_kmh" in data
     assert "acceleration" in data
 
-    r = await client.post("/can/stop")
+    r = await client.post(f"/can/{sid}/stop")
     assert r.status_code == 200
     assert r.json()["status"] == "stopped"
+
+    await client.post("/session/end", json={"session_id": sid})
 
 
 @pytest.mark.asyncio
 async def test_can_invalid_scenario(client: AsyncClient):
     """잘못된 시나리오명"""
-    r = await client.post("/can/start/nonexistent")
+    rs = await client.post("/session/start", json={
+        "user_id": "u_can_inv", "vehicle_id": "v_can_inv"})
+    sid = rs.json()["session_id"]
+    r = await client.post(f"/can/{sid}/start/nonexistent")
     assert r.status_code == 400
+    await client.post("/session/end", json={"session_id": sid})
 
 
 # ══════════════════════════════════════
@@ -176,8 +188,8 @@ async def test_session_lifecycle(client: AsyncClient):
     assert session_id.startswith("sess_")
     assert r.json()["initial_score"] == 100
 
-    # 4-2. CAN 시작
-    r = await client.post("/can/start/sudden_start")
+    # 4-2. CAN 재시작 (세션 시작 시 이미 자동 시작됨, 시나리오 확인용)
+    r = await client.post(f"/can/{session_id}/start/sudden_start")
     assert r.status_code == 200
     await asyncio.sleep(0.5)  # 데이터 생성 대기
 
@@ -240,7 +252,7 @@ async def test_session_lifecycle(client: AsyncClient):
     assert isinstance(events, list)
 
     # 4-7. CAN 중지
-    r = await client.post("/can/stop")
+    r = await client.post(f"/can/{session_id}/stop")
     assert r.status_code == 200
 
     # 4-8. 세션 종료
@@ -273,10 +285,7 @@ async def test_session_lifecycle(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_detect_no_session(client: AsyncClient):
-    """활성 세션 없이 /detect → 400"""
-    from app.main import app_state
-    app_state.active_session_id = None
-
+    """존재하지 않는 세션으로 /detect → 404"""
     r = await client.post("/detect", json={
         "frame_id": 1,
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -286,7 +295,7 @@ async def test_detect_no_session(client: AsyncClient):
         "ego_motion": {"vx": 0.0, "vy": 0.0, "speed": 0.0},
         "objects": [],
     })
-    assert r.status_code == 400
+    assert r.status_code == 404
 
 
 # ══════════════════════════════════════

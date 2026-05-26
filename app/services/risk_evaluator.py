@@ -7,6 +7,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+from app.core.object_classes import RISK_TARGET_CATEGORIES, get_category
 from app.models.schemas import CANSnapshot, DrivingEvent, ScoringConfig, TrackedObject
 
 logger = logging.getLogger(__name__)
@@ -16,10 +17,8 @@ class RiskEvaluator:
     """위험도 평가 및 운전 이벤트 생성"""
 
     def __init__(self):
-        self.danger_threshold: float = 0.15   # depth 기준 Danger
-        self.warning_threshold: float = 0.35  # depth 기준 Warning
-        self.consecutive_danger: dict[int, int] = {}  # track_id → 연속 Danger 프레임 수
-        self.alert_frame_count: int = 3  # 연속 3프레임 Danger 시 경고
+        self.danger_threshold: float = 0.15   # depth 기준 danger
+        self.warning_threshold: float = 0.35  # depth 기준 warning
         self.config: Optional[ScoringConfig] = None
 
     def reload_config(self, config: ScoringConfig) -> None:
@@ -27,48 +26,23 @@ class RiskEvaluator:
         self.config = config
         self.danger_threshold = config.proximity_distance
 
-    def assess(self, track_id: int, depth: float,
-           can_data: Optional[CANSnapshot] = None,
-           is_moving: bool = True) -> str:
-        """객체별 위험도 평가, 정적 객체는 평가 제외"""
-        # 정적 객체는 위험도 평가 제외 (결함 #3 대응)
-        if not is_moving:
-            self.reset_counter(track_id)
+    def assess(self, track_id: int, class_id: int, depth: float,
+               is_moving: bool = True) -> str:
+        """객체별 위험도 평가. 거리로 판정하며 is_moving은 위험도를 올리는 가중 요소.
+        INFO/UNDEFINED 카테고리는 평가 대상이 아님."""
+        # 위험 평가 대상이 아닌 카테고리 (주차선, 표지 아이콘 등)
+        if get_category(class_id) not in RISK_TARGET_CATEGORIES:
             return "safe"
 
-        # 거리 기반 위험도 구간화
+        # 거리 기반 위험도 판정
         if depth <= self.danger_threshold:
-            risk_level = "danger"
-        elif depth <= self.warning_threshold:
-            risk_level = "warning"
-        else:
-            risk_level = "safe"
-
-        # 연속 Danger 카운트
-        if risk_level == "danger":
-            self.consecutive_danger[track_id] = \
-                self.consecutive_danger.get(track_id, 0) + 1
-        else:
-            self.reset_counter(track_id)
-
-        return risk_level
-
-    def check_consecutive_danger(self, track_id: int) -> bool:
-        """연속 3프레임 이상 Danger인지 확인"""
-        return self.consecutive_danger.get(track_id, 0) >= self.alert_frame_count
-
-    def reset_counter(self, track_id: int) -> None:
-        """연속 Danger 카운터 리셋"""
-        self.consecutive_danger.pop(track_id, None)
-
-    def get_risk_color(self, risk_level: str) -> str:
-        """위험도 → 색상 (MR001)"""
-        colors = {
-            "danger": "red",
-            "warning": "yellow",
-            "safe": "green",
-        }
-        return colors.get(risk_level, "green")
+            # 근접: 정지/이동 무관하게 danger (코앞 객체는 충돌 위험)
+            return "danger"
+        if depth <= self.warning_threshold:
+            # 중거리: 정지는 warning, 이동 객체는 danger로 격상
+            return "danger" if is_moving else "warning"
+        # 원거리: 정지/이동 무관 safe
+        return "safe"
 
     def evaluate_driving_event(
         self,

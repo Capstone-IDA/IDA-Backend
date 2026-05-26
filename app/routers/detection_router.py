@@ -20,6 +20,7 @@ from app.models.schemas import (
     HealthStatus,
     ScoreRecord,
     ScoringConfig,
+    WSFrameResultMessage,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,27 +35,21 @@ async def detect(payload: AIDetectionPayload):
     """AI 추론 결과 수신, 조건부 점수 산출"""
     from app.main import app_state
 
-    # 활성 세션 확인
-    active_session = app_state.active_session_id
-    if not active_session:
+    # 세션 런타임 컨텍스트 조회
+    ctx = app_state.sessions.get(payload.session_id)
+    if ctx is None:
         raise HTTPException(
-            status_code=400,
-            detail="활성 세션이 없습니다. /session/start를 먼저 호출하세요.",
+            status_code=404,
+            detail="세션을 찾을 수 없습니다. /session/start를 먼저 호출하세요.",
         )
-
-    # session_id 불일치는 경고만, BE 세션을 신뢰
-    if payload.session_id != active_session:
-        logger.warning(
-            f"session_id 불일치: payload={payload.session_id}, "
-            f"active={active_session}"
-        )
-    session_id = active_session
+    session_id = ctx.session_id
+    ctx.last_activity = datetime.utcnow()
 
     # timestamp 안전 파싱
     ts = _parse_timestamp(payload.timestamp)
 
-    # CAN 스냅샷 (BE가 자체 보유)
-    can_snapshot = app_state.can_simulator.get_latest()
+    # CAN 스냅샷 (세션별 시뮬레이터)
+    can_snapshot = ctx.can_simulator.get_latest()
 
     # 객체별 위험도 평가
     objects_response: list[dict] = []
@@ -64,29 +59,15 @@ async def detect(payload: AIDetectionPayload):
     for obj in payload.objects:
         risk_level = app_state.risk_evaluator.assess(
             track_id=obj.track_id,
+            class_id=obj.class_id,
             depth=obj.depth_val,
-            can_data=can_snapshot,
             is_moving=obj.is_moving,
         )
         if _risk_priority(risk_level) > _risk_priority(max_risk):
             max_risk = risk_level
             worst_track_id = obj.track_id
 
-        objects_response.append({
-            "class_id": obj.class_id,
-            "class_name": obj.class_name,
-            "confidence": round(obj.confidence, 3),
-            "bbox": obj.bbox.model_dump(),
-            "track_id": obj.track_id,
-            "depth_val": round(obj.depth_val, 3),
-            "bbox_area_ratio": round(obj.bbox_area_ratio, 4),
-            "bbox_velocity_x": round(obj.bbox_velocity_x, 3),
-            "bbox_velocity_y": round(obj.bbox_velocity_y, 3),
-            "obj_speed_px": round(obj.obj_speed_px, 3),
-            "is_moving": obj.is_moving,
-            "distance_zone": classify_zone(obj.depth_val),
-            "risk_level": risk_level,
-        })
+        objects_response.append(build_object_view(obj, risk_level))
 
     # 탐지 로그 저장 (매 프레임)
     log_id = await app_state.repo.save_detection(
@@ -114,10 +95,10 @@ async def detect(payload: AIDetectionPayload):
         )
 
     # 점수 산출 조건: 5프레임 주기 또는 CAN 이벤트 임계 도달
-    app_state.frame_counter += 1
-    cfg = app_state.scorer.config_cache
+    ctx.frame_counter += 1
+    cfg = ctx.scorer.config_cache
     should_score = (
-        app_state.frame_counter % SCORE_INTERVAL == 0
+        ctx.frame_counter % SCORE_INTERVAL == 0
         or _is_can_event(can_snapshot, cfg)
     )
 
@@ -136,18 +117,21 @@ async def detect(payload: AIDetectionPayload):
             track_id=worst_track_id,
         )
 
-        if event:
+        # 동일 유형 이벤트 쿨다운: 같은 급제동/급출발이 연속 프레임에서 중복 카운트되는 것 방지
+        if event and not ctx.scorer.is_cooldown_active(
+            event.event_type, event.timestamp
+        ):
             event.can_id = can_id
-            app_state.scorer.apply_deduction(event)
+            ctx.scorer.apply_deduction(event)
             event_id = await app_state.repo.save_driving_event(event)
             event.event_id = event_id
 
             score_record = ScoreRecord(
                 session_id=session_id,
-                previous_score=app_state.scorer.current_score + event.deduction,
+                previous_score=ctx.scorer.current_score + event.deduction,
                 deduction=event.deduction,
-                current_score=app_state.scorer.current_score,
-                grade=app_state.scorer.get_grade(),
+                current_score=ctx.scorer.current_score,
+                grade=ctx.scorer.get_grade(),
                 event_id=event_id,
             )
             await app_state.repo.save_score(score_record)
@@ -163,18 +147,37 @@ async def detect(payload: AIDetectionPayload):
                 "message": _event_message(event.event_type),
             })
 
-            if app_state.scorer.has_grade_changed():
-                grade = app_state.scorer.get_grade()
+            if ctx.scorer.has_grade_changed():
+                grade = ctx.scorer.get_grade()
                 await app_state.alert_manager.on_grade_change(
                     session_id=session_id,
                     grade=grade,
-                    score=app_state.scorer.current_score,
+                    score=ctx.scorer.current_score,
                 )
                 alerts_out.append({
                     "type": "grade_change",
                     "grade": grade,
-                    "score": app_state.scorer.current_score,
+                    "score": ctx.scorer.current_score,
                 })
+
+    # FE 대시보드로 프레임 결과 브로드캐스트
+    frame_result = WSFrameResultMessage(
+        session_id=session_id,
+        frame_id=payload.frame_id,
+        timestamp=ts.isoformat(),
+        objects=objects_response,
+        max_risk_level=max_risk.upper(),
+        can=can_snapshot,
+        driving_events=driving_events_out,
+        alerts=alerts_out,
+        score={
+            "current_score": ctx.scorer.current_score,
+            "grade": ctx.scorer.get_grade(),
+        },
+    )
+    await app_state.dashboard_hub.broadcast(
+        session_id, frame_result.model_dump(mode="json")
+    )
 
     return DetectionApiResponse(
         session_id=session_id,
@@ -196,8 +199,8 @@ async def detect(payload: AIDetectionPayload):
         driving_events=driving_events_out,
         alerts=alerts_out,
         score={
-            "current_score": app_state.scorer.current_score,
-            "grade": app_state.scorer.get_grade(),
+            "current_score": ctx.scorer.current_score,
+            "grade": ctx.scorer.get_grade(),
         },
         error=None,
     )
@@ -251,3 +254,22 @@ def _event_message(event_type: str) -> str:
         "overspeeding": "과속 감지",
     }
     return messages.get(event_type, "위험 이벤트 감지")
+
+
+def build_object_view(obj, risk_level: str) -> dict:
+    """탐지 객체를 응답/브로드캐스트용 dict로 변환"""
+    return {
+        "class_id": obj.class_id,
+        "class_name": obj.class_name,
+        "confidence": round(obj.confidence, 3),
+        "bbox": obj.bbox.model_dump(),
+        "track_id": obj.track_id,
+        "depth_val": round(obj.depth_val, 3),
+        "bbox_area_ratio": round(obj.bbox_area_ratio, 4),
+        "bbox_velocity_x": round(obj.bbox_velocity_x, 3),
+        "bbox_velocity_y": round(obj.bbox_velocity_y, 3),
+        "obj_speed_px": round(obj.obj_speed_px, 3),
+        "is_moving": obj.is_moving,
+        "distance_zone": classify_zone(obj.depth_val),
+        "risk_level": risk_level,
+    }

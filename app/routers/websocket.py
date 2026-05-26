@@ -22,6 +22,7 @@ from app.models.schemas import (
     WSDetectionPayload,
     WSDrivingEventMessage,
     WSErrorMessage,
+    WSFrameResultMessage,
     WSGradeChangeMessage,
     WSSessionClosedMessage,
 )
@@ -37,13 +38,10 @@ async def ws_detect(websocket: WebSocket, session_id: str):
     """AI 추론 결과 실시간 수신, 운전 이벤트와 등급 변동을 push"""
     from app.main import app_state
 
-    # 활성 세션 검증 (session_id가 UUID라 외부 추측 어려움)
-    active = app_state.active_session_id
-    if not active:
-        await websocket.close(code=1008, reason="No active session")
-        return
-    if session_id != active:
-        await websocket.close(code=1008, reason="Session id mismatch")
+    # 세션 런타임 컨텍스트 검증 (session_id가 UUID라 외부 추측 어려움)
+    ctx = app_state.sessions.get(session_id)
+    if ctx is None:
+        await websocket.close(code=1008, reason="Unknown or inactive session")
         return
 
     # 핸드셰이크 수락
@@ -69,9 +67,9 @@ async def ws_detect(websocket: WebSocket, session_id: str):
             msg_type = data.get("type")
 
             if msg_type == "detection":
-                await _handle_detection(websocket, data, session_id)
+                await _handle_detection(websocket, data, ctx)
             elif msg_type == "session_end":
-                await _handle_session_end(websocket, session_id)
+                await _handle_session_end(websocket, ctx)
                 break
             else:
                 await _send_error(
@@ -90,9 +88,29 @@ async def ws_detect(websocket: WebSocket, session_id: str):
             pass
 
 
-async def _handle_detection(websocket: WebSocket, data: dict, session_id: str) -> None:
-    """detection 메시지 처리 — 이벤트 발생/등급 변동 시에만 push"""
+@router.websocket("/ws/dashboard/{session_id}")
+async def ws_dashboard(websocket: WebSocket, session_id: str):
+    """FE 대시보드 구독 채널 - 프레임 결과를 단방향 수신"""
     from app.main import app_state
+
+    await app_state.dashboard_hub.connect(session_id, websocket)
+    try:
+        while True:
+            # FE는 수신 전용, 연결 유지를 위해 클라이언트 메시지를 대기만 함
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        app_state.dashboard_hub.disconnect(session_id, websocket)
+    except Exception as e:
+        logger.exception(f"대시보드 WS 오류: {e}")
+        app_state.dashboard_hub.disconnect(session_id, websocket)
+
+
+async def _handle_detection(websocket: WebSocket, data: dict, ctx) -> None:
+    """detection 처리 — AI 소켓에 이벤트 push, FE 대시보드에 프레임 결과 broadcast"""
+    from app.main import app_state
+    from app.routers.detection_router import build_object_view, _event_message
+
+    session_id = ctx.session_id
 
     try:
         payload = WSDetectionPayload(**data)
@@ -100,31 +118,32 @@ async def _handle_detection(websocket: WebSocket, data: dict, session_id: str) -
         await _send_error(websocket, "INVALID_PAYLOAD", str(e))
         return
 
-    # 활성 세션 재확인
-    if app_state.active_session_id != session_id:
-        await _send_error(websocket, "NO_ACTIVE_SESSION", "활성 세션이 변경됨")
+    # 세션 종료 여부 재확인
+    if session_id not in app_state.sessions:
+        await _send_error(websocket, "NO_ACTIVE_SESSION", "세션이 종료됨")
         return
 
     try:
         ts = _parse_timestamp(payload.timestamp)
-        can_snapshot = app_state.can_simulator.get_latest()
+        ctx.last_activity = datetime.utcnow()
+        can_snapshot = ctx.can_simulator.get_latest()
 
         # 객체별 위험도 평가
         max_risk = "safe"
         worst_track_id: Optional[int] = None
-        risks_for_save: list[tuple] = []
+        objects_view: list[dict] = []
 
         for obj in payload.objects:
             risk_level = app_state.risk_evaluator.assess(
                 track_id=obj.track_id,
+                class_id=obj.class_id,
                 depth=obj.depth_val,
-                can_data=can_snapshot,
                 is_moving=obj.is_moving,
             )
             if _risk_priority(risk_level) > _risk_priority(max_risk):
                 max_risk = risk_level
                 worst_track_id = obj.track_id
-            risks_for_save.append((obj, risk_level, classify_zone(obj.depth_val)))
+            objects_view.append(build_object_view(obj, risk_level))
 
         # 탐지 로그 저장
         log_id = await app_state.repo.save_detection(
@@ -136,7 +155,7 @@ async def _handle_detection(websocket: WebSocket, data: dict, session_id: str) -
             inference_time_ms=round(payload.inference_time_ms, 2),
         )
 
-        for obj, risk_level, dist_zone in risks_for_save:
+        for obj, ov in zip(payload.objects, objects_view):
             await app_state.repo.save_detected_object(
                 log_id=log_id,
                 track_id=obj.track_id,
@@ -147,15 +166,15 @@ async def _handle_detection(websocket: WebSocket, data: dict, session_id: str) -
                 bbox_w=obj.bbox.w,
                 bbox_h=obj.bbox.h,
                 depth_value=obj.depth_val,
-                distance_zone=dist_zone,
-                risk_level=risk_level,
+                distance_zone=ov["distance_zone"],
+                risk_level=ov["risk_level"],
             )
 
         # 점수 산출 조건
-        app_state.frame_counter += 1
-        cfg = app_state.scorer.config_cache
+        ctx.frame_counter += 1
+        cfg = ctx.scorer.config_cache
         should_score = (
-            app_state.frame_counter % SCORE_INTERVAL == 0
+            ctx.frame_counter % SCORE_INTERVAL == 0
             or _is_can_event(can_snapshot, cfg)
         )
 
@@ -163,84 +182,119 @@ async def _handle_detection(websocket: WebSocket, data: dict, session_id: str) -
         if can_snapshot:
             can_id = await app_state.repo.save_can_data(session_id, can_snapshot)
 
-        if not (can_snapshot and should_score):
-            return
+        driving_events_out: list[dict] = []
+        alerts_out: list[dict] = []
 
-        event = app_state.risk_evaluator.evaluate_driving_event(
+        if can_snapshot and should_score:
+            event = app_state.risk_evaluator.evaluate_driving_event(
+                session_id=session_id,
+                can_data=can_snapshot,
+                risk_level=max_risk,
+                track_id=worst_track_id,
+            )
+            # 동일 유형 이벤트 쿨다운: 연속 프레임 중복 카운트 방지
+            if event and not ctx.scorer.is_cooldown_active(
+                event.event_type, event.timestamp
+            ):
+                event.can_id = can_id
+                previous_grade = ctx.scorer.get_grade()
+                ctx.scorer.apply_deduction(event)
+                event_id = await app_state.repo.save_driving_event(event)
+                event.event_id = event_id
+
+                score_record = ScoreRecord(
+                    session_id=session_id,
+                    previous_score=ctx.scorer.current_score + event.deduction,
+                    deduction=event.deduction,
+                    current_score=ctx.scorer.current_score,
+                    grade=ctx.scorer.get_grade(),
+                    event_id=event_id,
+                )
+                await app_state.repo.save_score(score_record)
+
+                event_dict = {
+                    "event_type": event.event_type,
+                    "severity": event.severity,
+                    "speed": event.speed,
+                    "acceleration": event.acceleration,
+                    "is_proximate": event.is_proximate,
+                    "deduction": event.deduction,
+                    "track_id": event.track_id,
+                    "message": _event_message(event.event_type),
+                }
+                driving_events_out.append(event_dict)
+
+                # AI 소켓으로 driving_event push
+                event_msg = WSDrivingEventMessage(
+                    frame_id=payload.frame_id,
+                    timestamp=ts.isoformat(),
+                    event=event_dict,
+                    score={
+                        "current_score": ctx.scorer.current_score,
+                        "grade": ctx.scorer.get_grade(),
+                    },
+                )
+                await websocket.send_json(event_msg.model_dump())
+
+                # 등급 변동 시 grade_change push
+                if ctx.scorer.has_grade_changed():
+                    current_grade = ctx.scorer.get_grade()
+                    await app_state.alert_manager.on_grade_change(
+                        session_id=session_id,
+                        grade=current_grade,
+                        score=ctx.scorer.current_score,
+                    )
+                    alerts_out.append({
+                        "type": "grade_change",
+                        "grade": current_grade,
+                        "score": ctx.scorer.current_score,
+                    })
+                    grade_msg = WSGradeChangeMessage(
+                        frame_id=payload.frame_id,
+                        timestamp=ts.isoformat(),
+                        grade=current_grade,
+                        previous_grade=previous_grade,
+                        score=ctx.scorer.current_score,
+                    )
+                    await websocket.send_json(grade_msg.model_dump())
+
+        # FE 대시보드로 프레임 결과 브로드캐스트
+        frame_result = WSFrameResultMessage(
             session_id=session_id,
-            can_data=can_snapshot,
-            risk_level=max_risk,
-            track_id=worst_track_id,
-        )
-        if event is None:
-            return
-
-        event.can_id = can_id
-        previous_grade = app_state.scorer.get_grade()
-        app_state.scorer.apply_deduction(event)
-        event_id = await app_state.repo.save_driving_event(event)
-        event.event_id = event_id
-
-        score_record = ScoreRecord(
-            session_id=session_id,
-            previous_score=app_state.scorer.current_score + event.deduction,
-            deduction=event.deduction,
-            current_score=app_state.scorer.current_score,
-            grade=app_state.scorer.get_grade(),
-            event_id=event_id,
-        )
-        await app_state.repo.save_score(score_record)
-
-        # driving_event push
-        event_msg = WSDrivingEventMessage(
             frame_id=payload.frame_id,
             timestamp=ts.isoformat(),
-            event={
-                "event_type": event.event_type,
-                "severity": event.severity,
-                "speed": event.speed,
-                "acceleration": event.acceleration,
-                "is_proximate": event.is_proximate,
-                "deduction": event.deduction,
-                "track_id": event.track_id,
-            },
+            objects=objects_view,
+            max_risk_level=max_risk.upper(),
+            can=can_snapshot,
+            driving_events=driving_events_out,
+            alerts=alerts_out,
             score={
-                "current_score": app_state.scorer.current_score,
-                "grade": app_state.scorer.get_grade(),
+                "current_score": ctx.scorer.current_score,
+                "grade": ctx.scorer.get_grade(),
             },
         )
-        await websocket.send_json(event_msg.model_dump())
-
-        # 등급 변동 시 grade_change push
-        if app_state.scorer.has_grade_changed():
-            current_grade = app_state.scorer.get_grade()
-            await app_state.alert_manager.on_grade_change(
-                session_id=session_id,
-                grade=current_grade,
-                score=app_state.scorer.current_score,
-            )
-            grade_msg = WSGradeChangeMessage(
-                frame_id=payload.frame_id,
-                timestamp=ts.isoformat(),
-                grade=current_grade,
-                previous_grade=previous_grade,
-                score=app_state.scorer.current_score,
-            )
-            await websocket.send_json(grade_msg.model_dump())
+        await app_state.dashboard_hub.broadcast(
+            session_id, frame_result.model_dump(mode="json")
+        )
 
     except Exception as e:
         logger.exception(f"detection 처리 오류: {e}")
         await _send_error(websocket, "INTERNAL", str(e))
 
 
-async def _handle_session_end(websocket: WebSocket, session_id: str) -> None:
-    """클라이언트 명시적 종료. 실제 세션 정리/리포트 생성은 별도 /session/end로 처리."""
-    from app.main import app_state
+async def _handle_session_end(websocket: WebSocket, ctx) -> None:
+    """클라이언트 명시적 종료: 세션 정리와 리포트 생성까지 수행"""
+    from app.routers.session_router import finalize_session
 
-    msg = WSSessionClosedMessage(
-        final_score=app_state.scorer.current_score,
-        report_id=None,
-    )
+    result = await finalize_session(ctx.session_id)
+    if result is not None:
+        final_score = result.get("final_score", ctx.scorer.current_score)
+        report_id = result.get("report_id")
+    else:
+        final_score = ctx.scorer.current_score
+        report_id = None
+
+    msg = WSSessionClosedMessage(final_score=final_score, report_id=report_id)
     await websocket.send_json(msg.model_dump())
     await websocket.close(code=1000, reason="Session ended by client")
 

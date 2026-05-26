@@ -109,6 +109,7 @@ class DatabaseManager:
             session_id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
             vehicle_id TEXT NOT NULL,
+            rental_id TEXT,
             start_time DATETIME NOT NULL,
             end_time DATETIME,
             scenario TEXT,
@@ -266,6 +267,7 @@ class DatabaseManager:
             orange_min INTEGER DEFAULT 30,
             blacklist_threshold INTEGER DEFAULT 30,
             alert_min_interval_sec INTEGER DEFAULT 30,
+            event_cooldown_sec REAL DEFAULT 3.0,
             updated_at DATETIME,
             updated_by TEXT
         );
@@ -320,6 +322,20 @@ class DatabaseManager:
             await self.execute("ALTER TABLE users ADD COLUMN company_id TEXT")
             logger.info("users 테이블에 company_id 컬럼 추가됨")
 
+        # 기존 DB 호환: scoring_config.event_cooldown_sec 컬럼이 없으면 추가
+        cfg_cols = await self.fetch_all("PRAGMA table_info(scoring_config)")
+        if not any(c["name"] == "event_cooldown_sec" for c in cfg_cols):
+            await self.execute(
+                "ALTER TABLE scoring_config ADD COLUMN event_cooldown_sec REAL DEFAULT 3.0"
+            )
+            logger.info("scoring_config 테이블에 event_cooldown_sec 컬럼 추가됨")
+
+        # 기존 DB 호환: driving_sessions.rental_id 컬럼이 없으면 추가
+        sess_cols = await self.fetch_all("PRAGMA table_info(driving_sessions)")
+        if not any(c["name"] == "rental_id" for c in sess_cols):
+            await self.execute("ALTER TABLE driving_sessions ADD COLUMN rental_id TEXT")
+            logger.info("driving_sessions 테이블에 rental_id 컬럼 추가됨")
+
         # 기본 스코어링 설정 삽입 (없을 때만)
         existing = await self.fetch_one("SELECT config_id FROM scoring_config LIMIT 1")
         if not existing:
@@ -329,9 +345,10 @@ class DatabaseManager:
                     deduction_sudden_start, deduction_sudden_brake,
                     deduction_proximate, deduction_overspeeding,
                     green_min, yellow_min, orange_min,
-                    blacklist_threshold, alert_min_interval_sec, updated_at)
+                    blacklist_threshold, alert_min_interval_sec,
+                    event_cooldown_sec, updated_at)
                    VALUES (2.0, 2.0, 30.0, 0.2, 5.0, 5.0, 10.0, 8.0,
-                           80, 50, 30, 30, 30, CURRENT_TIMESTAMP)"""
+                           80, 50, 30, 30, 30, 3.0, CURRENT_TIMESTAMP)"""
             )
             logger.info("기본 스코어링 설정 삽입 완료")
 

@@ -11,7 +11,6 @@ from typing import Optional
 
 from app.db.database import DatabaseManager
 from app.models.schemas import (
-    AlertRecord,
     BlacklistRecord,
     CANSnapshot,
     DrivingEvent,
@@ -62,23 +61,6 @@ class LogRepository:
              bbox_x, bbox_y, bbox_w, bbox_h,
              depth_value, distance_zone, risk_level)
         )
-
-    async def get_by_period(self, session_id: str,
-                            start: Optional[datetime] = None,
-                            end: Optional[datetime] = None,
-                            limit: int = 100) -> list[dict]:
-        """기간별 탐지 로그 조회"""
-        query = "SELECT * FROM detection_logs WHERE session_id = ?"
-        params: list = [session_id]
-        if start:
-            query += " AND timestamp >= ?"
-            params.append(start.isoformat())
-        if end:
-            query += " AND timestamp <= ?"
-            params.append(end.isoformat())
-        query += " ORDER BY timestamp DESC LIMIT ?"
-        params.append(limit)
-        return await self.db.fetch_all(query, tuple(params))
 
     async def get_stats(self, session_id: Optional[str] = None,
                         start: Optional[datetime] = None,
@@ -155,30 +137,6 @@ class LogRepository:
             "alert_count": alert_row["alert_count"] if alert_row else 0,
             "error_count": error_row["error_count"] if error_row else 0,
         }
-
-    async def delete_old(self, retention_days: int) -> int:
-        """오래된 로그 삭제"""
-        result = await self.db.execute(
-            """DELETE FROM detection_logs
-               WHERE timestamp < datetime('now', ? || ' days')""",
-            (f"-{retention_days}",)
-        )
-        logger.info(f"{retention_days}일 이전 로그 삭제 완료")
-        return result
-
-    # ── Alert Records ──
-
-    async def save_alert(self, record: AlertRecord) -> int:
-        """경고 기록 저장"""
-        return await self.db.execute(
-            """INSERT INTO alert_records
-               (session_id, timestamp, track_id, risk_level,
-                consecutive_frames, score, grade)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (record.session_id, record.timestamp.isoformat(),
-             record.track_id, record.risk_level,
-             record.consecutive_frames, record.score, record.grade)
-        )
 
     # ── Driving Events ──
 
@@ -317,14 +275,19 @@ class LogRepository:
             row["score_timeline"] = json.loads(row["score_timeline_json"])
         return row
 
-    async def get_reports_by_user(self, user_id: str) -> list[dict]:
-        """사용자별 리포트 목록 조회"""
-        rows = await self.db.fetch_all(
-            """SELECT * FROM session_reports
-               WHERE user_id = ?
-               ORDER BY created_at DESC""",
-            (user_id,)
-        )
+    async def get_reports_by_user(self, user_id: str,
+                                  rental_id: Optional[str] = None) -> list[dict]:
+        """사용자별 리포트 목록 조회. rental_id 지정 시 해당 렌트 건만."""
+        query = """SELECT sr.*, ds.rental_id FROM session_reports sr
+                   JOIN driving_sessions ds ON sr.session_id = ds.session_id
+                   WHERE sr.user_id = ?"""
+        params: list = [user_id]
+        if rental_id is not None:
+            query += " AND ds.rental_id = ?"
+            params.append(rental_id)
+        query += " ORDER BY sr.created_at DESC"
+
+        rows = await self.db.fetch_all(query, tuple(params))
         for row in rows:
             if row.get("score_timeline_json"):
                 row["score_timeline"] = json.loads(row["score_timeline_json"])
@@ -485,6 +448,7 @@ class LogRepository:
             "orange_min": 30,
             "blacklist_threshold": 30,
             "alert_min_interval_sec": 30,
+            "event_cooldown_sec": 3.0,
         }
         await self.update_config(defaults, changed_by="system_reset")
         return await self.get_config()
@@ -493,7 +457,8 @@ class LogRepository:
 
     async def create_session(self, session_id: str, user_id: str,
                              vehicle_id: str, scenario: Optional[str] = None,
-                             company_id: Optional[str] = None) -> None:
+                             company_id: Optional[str] = None,
+                             rental_id: Optional[str] = None) -> None:
         """운전 세션 생성"""
         # 사용자가 없으면 자동 생성 (캡스톤 편의)
         existing_user = await self.db.fetch_one(
@@ -524,9 +489,9 @@ class LogRepository:
 
         await self.db.execute(
             """INSERT INTO driving_sessions
-               (session_id, user_id, vehicle_id, start_time, scenario, status)
-               VALUES (?, ?, ?, ?, ?, 'active')""",
-            (session_id, user_id, vehicle_id,
+               (session_id, user_id, vehicle_id, rental_id, start_time, scenario, status)
+               VALUES (?, ?, ?, ?, ?, ?, 'active')""",
+            (session_id, user_id, vehicle_id, rental_id,
              datetime.utcnow().isoformat(), scenario)
         )
 
@@ -868,13 +833,4 @@ class LogRepository:
             "blacklist_count": bl_count["cnt"] if bl_count else 0,
             "vehicle_count": vehicle_row["cnt"] if vehicle_row else 0,
             "customer_count": customer_row["cnt"] if customer_row else 0,
-        }
-
-        
-        return {
-            "active_sessions": active["cnt"] if active else 0,
-            "total_sessions": total["cnt"] if total else 0,
-            "avg_final_score": round(avg_row["avg_score"] or 0, 1) if avg_row else 0,
-            "total_events": events["cnt"] if events else 0,
-            "blacklist_count": bl_count["cnt"] if bl_count else 0,
         }

@@ -4,6 +4,7 @@ DrivingScorer
 """
 
 import logging
+from datetime import datetime
 from typing import Optional
 
 from app.models.schemas import DrivingEvent, ScoringConfig
@@ -20,16 +21,20 @@ class DrivingScorer:
         self.min_score: float = 0.0
         self.config_cache: Optional[ScoringConfig] = None
         self._previous_grade: str = "Green"
+        self.event_cooldown_sec: float = 3.0
+        self._last_event_time: dict[str, datetime] = {}  # event_type별 마지막 카운트 시각
 
     def reload_config(self, config: ScoringConfig) -> None:
         """설정 캐시 갱신"""
         self.config_cache = config
+        self.event_cooldown_sec = config.event_cooldown_sec
         logger.info("DrivingScorer 설정 캐시 갱신 완료")
 
     def reset(self, session_id: str) -> None:
         """세션 시작 시 점수 초기화"""
         self.current_score = self.initial_score
         self._previous_grade = "Green"
+        self._last_event_time.clear()
         logger.info(f"스코어 초기화: session={session_id}, score={self.current_score}")
 
     def apply_deduction(self, event: DrivingEvent) -> float:
@@ -39,6 +44,7 @@ class DrivingScorer:
 
         previous = self.current_score
         self.current_score = max(self.min_score, self.current_score - deduction)
+        self._last_event_time[event.event_type] = event.timestamp
 
         logger.info(
             f"감점 적용: {event.event_type} "
@@ -46,6 +52,13 @@ class DrivingScorer:
             f"-{deduction}점 → {previous} → {self.current_score}"
         )
         return self.current_score
+
+    def is_cooldown_active(self, event_type: str, timestamp: datetime) -> bool:
+        """같은 유형 이벤트가 쿨다운 구간 내 재발생했는지 확인"""
+        last = self._last_event_time.get(event_type)
+        if last is None:
+            return False
+        return (timestamp - last).total_seconds() < self.event_cooldown_sec
 
     def get_current_score(self) -> float:
         return self.current_score
