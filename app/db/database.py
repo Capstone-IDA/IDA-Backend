@@ -101,6 +101,7 @@ class DatabaseManager:
             plate_number TEXT,
             model TEXT,
             company_id TEXT,
+            year TEXT,
             FOREIGN KEY (company_id) REFERENCES companies(company_id)
         );
 
@@ -311,6 +312,20 @@ class DatabaseManager:
             ON alert_records(session_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_accounts_username
             ON accounts(username);
+         -- 프레임 이미지 저장
+        CREATE TABLE IF NOT EXISTS frame_images (
+            image_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            frame_number INTEGER NOT NULL,
+            log_id INTEGER,
+            image_data BLOB NOT NULL,
+            content_type TEXT DEFAULT 'image/jpeg',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (session_id) REFERENCES driving_sessions(session_id),
+            FOREIGN KEY (log_id) REFERENCES detection_logs(log_id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_frame_images_session_frame
+            ON frame_images(session_id, frame_number);
         """
         async with self.lock:
             await self.connection.executescript(schema)

@@ -79,6 +79,20 @@ async def detect(payload: AIDetectionPayload):
         inference_time_ms=round(payload.inference_time_ms, 2),
     )
 
+    # 프레임 이미지 저장 (AI가 base64로 실어서 보낸 경우)
+    if payload.frame_image_b64:
+        import base64
+        try:
+            image_bytes = base64.b64decode(payload.frame_image_b64)
+            await app_state.repo.save_frame_image(
+                session_id=session_id,
+                frame_number=payload.frame_id,
+                image_data=image_bytes,
+                log_id=log_id,
+            )
+        except Exception as e:
+            logger.warning(f"프레임 이미지 저장 실패 frame={payload.frame_id}: {e}")
+            
     for obj, obj_resp in zip(payload.objects, objects_response):
         await app_state.repo.save_detected_object(
             log_id=log_id,

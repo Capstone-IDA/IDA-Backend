@@ -23,6 +23,7 @@ from app.services.can_simulator import CANSimulator
 from app.services.dashboard_hub import DashboardHub
 from app.services.driving_scorer import DrivingScorer
 from app.services.risk_evaluator import RiskEvaluator
+from app.routers.frame_router import router as frame_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -193,7 +194,7 @@ app.include_router(log_router)
 app.include_router(company_router)
 app.include_router(admin_router)
 app.include_router(websocket_router)
-
+app.include_router(frame_router)
 
 @app.get("/")
 async def root():

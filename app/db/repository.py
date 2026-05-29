@@ -384,6 +384,28 @@ class LogRepository:
              snapshot.brake_intensity, snapshot.scenario)
         )
 
+    # ── Frame Image ──
+
+    async def save_frame_image(self, session_id: str, frame_number: int,
+                                image_data: bytes, log_id: Optional[int] = None,
+                                content_type: str = "image/jpeg") -> int:
+        """프레임 이미지 저장, image_id 반환"""
+        return await self.db.execute(
+            """INSERT OR REPLACE INTO frame_images
+            (session_id, frame_number, log_id, image_data, content_type)
+            VALUES (?, ?, ?, ?, ?)""",
+            (session_id, frame_number, log_id, image_data, content_type)
+        )
+
+    async def get_frame_image(self, session_id: str,
+                            frame_number: int) -> Optional[dict]:
+        """프레임 이미지 조회"""
+        return await self.db.fetch_one(
+            """SELECT image_data, content_type FROM frame_images
+            WHERE session_id = ? AND frame_number = ?""",
+            (session_id, frame_number)
+        )
+
     # ── Config ──
 
     async def get_config(self) -> Optional[dict]:
@@ -526,21 +548,61 @@ class LogRepository:
 
     # ── Logs 조회 (LogRouter) ──
 
-    async def get_logs(self, start: Optional[datetime] = None,
-                       end: Optional[datetime] = None,
-                       limit: int = 100) -> list[dict]:
-        """알림 기록 기반 로그 조회"""
-        query = "SELECT * FROM alert_records WHERE 1=1"
+    async def get_logs(self, session_id: Optional[str] = None,
+                   start: Optional[datetime] = None,
+                   end: Optional[datetime] = None,
+                   limit: int = 100) -> list[dict]:
+        """프레임별 탐지 로그 조회 (detected_objects 포함)"""
+        where_clauses = ["1=1"]
         params: list = []
+
+        if session_id:
+            where_clauses.append("dl.session_id = ?")
+            params.append(session_id)
         if start:
-            query += " AND timestamp >= ?"
+            where_clauses.append("dl.timestamp >= ?")
             params.append(start.isoformat())
         if end:
-            query += " AND timestamp <= ?"
+            where_clauses.append("dl.timestamp <= ?")
             params.append(end.isoformat())
-        query += " ORDER BY timestamp DESC LIMIT ?"
-        params.append(limit)
-        return await self.db.fetch_all(query, tuple(params))
+
+        where = " AND ".join(where_clauses)
+
+        frames = await self.db.fetch_all(
+            f"""SELECT dl.log_id, dl.session_id, dl.frame_number,
+                    dl.timestamp, dl.object_count, dl.fps, dl.inference_time_ms
+                FROM detection_logs dl
+                WHERE {where}
+                ORDER BY dl.frame_number ASC
+                LIMIT ?""",
+            tuple(params + [limit])
+        )
+
+        if not frames:
+            return []
+
+        log_ids = [f["log_id"] for f in frames]
+        placeholders = ",".join("?" * len(log_ids))
+        objects = await self.db.fetch_all(
+            f"""SELECT log_id, track_id, class_name, confidence,
+                    bbox_x, bbox_y, bbox_w, bbox_h,
+                    depth_value, distance_zone, risk_level
+                FROM detected_objects
+                WHERE log_id IN ({placeholders})""",
+            tuple(log_ids)
+        )
+
+        obj_map: dict[int, list] = {}
+        for obj in objects:
+            obj_map.setdefault(obj["log_id"], []).append(dict(obj))
+
+        result = []
+        for frame in frames:
+            row = dict(frame)
+            row["objects"] = obj_map.get(frame["log_id"], [])
+            result.append(row)
+
+        return result
 
     # ══════════════════════════════════════
     # 인증 & 계정 관리

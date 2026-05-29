@@ -74,6 +74,7 @@ class AIDetectionPayload(BaseModel):
     session_id: str
     objects: list[AIDetectedObject] = Field(default_factory=list)
     ego_motion: EgoMotion
+    frame_image_b64: Optional[str] = None  # JPEG base64, 없으면 이미지 저장 스킵
 
 # ──────────────────────────────────────
 # 영상 처리 & 객체 감지
@@ -358,6 +359,7 @@ class VehicleCreateRequest(BaseModel):
     plate_number: str
     model: Optional[str] = None
     company_id: Optional[str] = Field(default=None, description="Admin 전용. Company 계정은 자기 업체로 자동 설정")
+    year: Optional[str] = None
 
 
 class VehicleInfo(BaseModel):
@@ -367,6 +369,7 @@ class VehicleInfo(BaseModel):
     model: Optional[str] = None
     company_id: Optional[str] = None
     company_name: Optional[str] = None
+    year: Optional[str] = None
 
 
 class CustomerCreateRequest(BaseModel):
@@ -374,7 +377,7 @@ class CustomerCreateRequest(BaseModel):
     name: str
     phone: Optional[str] = None
     company_id: Optional[str] = Field(default=None, description="Admin 전용. Company 계정은 자기 업체로 자동 설정")
-
+    license: Optional[str] = None
 
 class CustomerInfo(BaseModel):
     """고객 정보 응답"""
@@ -384,6 +387,7 @@ class CustomerInfo(BaseModel):
     company_id: Optional[str] = None
     company_name: Optional[str] = None
     created_at: Optional[str] = None
+    license: Optional[str] = None
 
 # ──────────────────────────────────────
 # WebSocket 메시지 (/ws/detect)
