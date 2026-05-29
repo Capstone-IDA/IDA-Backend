@@ -24,7 +24,7 @@ async def start_session(req: SessionStartRequest):
     """세션 시작: 런타임 컨텍스트 생성, CAN 시뮬레이터 연동"""
     from app.main import app_state
 
-    session_id = f"sess_{uuid.uuid4().hex[:12]}"
+    session_id = req.session_id or f"sess_{uuid.uuid4().hex[:12]}"
 
     # DB 세션 생성
     await app_state.repo.create_session(

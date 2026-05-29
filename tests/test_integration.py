@@ -89,7 +89,7 @@ async def test_get_config(client: AsyncClient):
     r = await client.get("/config")
     assert r.status_code == 200
     data = r.json()
-    assert data["accel_threshold"] == 2.0
+    assert data["accel_threshold"] == 3.0
     assert data["green_min"] == 80
     assert data["blacklist_threshold"] == 30
 
@@ -112,7 +112,7 @@ async def test_reset_config(client: AsyncClient):
     r = await client.post("/config/reset")
     assert r.status_code == 200
     data = r.json()
-    assert data["accel_threshold"] == 2.0
+    assert data["accel_threshold"] == 3.0
 
 
 # ══════════════════════════════════════
@@ -386,7 +386,7 @@ async def test_get_logs(client: AsyncClient):
     assert r.status_code == 200
     data = r.json()
     assert "total_count" in data
-    assert "events" in data
+    assert "frames" in data
 
 
 @pytest.mark.asyncio

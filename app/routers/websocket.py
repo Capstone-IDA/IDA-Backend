@@ -31,28 +31,34 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["WebSocket"])
 
 SCORE_INTERVAL = int(os.getenv("IDA_SCORE_INTERVAL", "5"))
-
+_active_ws: dict[str, WebSocket] = {}  # 추가
 
 @router.websocket("/ws/detect/{session_id}")
 async def ws_detect(websocket: WebSocket, session_id: str):
     """AI 추론 결과 실시간 수신, 운전 이벤트와 등급 변동을 push"""
     from app.main import app_state
 
-    # 세션 런타임 컨텍스트 검증 (session_id가 UUID라 외부 추측 어려움)
     ctx = app_state.sessions.get(session_id)
     if ctx is None:
         await websocket.close(code=1008, reason="Unknown or inactive session")
         return
 
-    # 핸드셰이크 수락
+    # 기존 연결이 살아있으면 강제 종료하고 새 연결로 교체
+    prev = _active_ws.get(session_id)
+    if prev is not None:
+        try:
+            await prev.close(code=1001, reason="Replaced by new connection")
+        except Exception:
+            pass
+
     await websocket.accept()
+    _active_ws[session_id] = websocket
 
     connected = WSConnectedMessage(
         session_id=session_id,
         server_time=datetime.utcnow().isoformat(),
     )
     await websocket.send_json(connected.model_dump())
-
     logger.info(f"WS 연결 수립: session={session_id}")
 
     try:
@@ -86,6 +92,9 @@ async def ws_detect(websocket: WebSocket, session_id: str):
             await websocket.close(code=1011, reason="Internal error")
         except Exception:
             pass
+    finally:
+        if _active_ws.get(session_id) is websocket:
+            _active_ws.pop(session_id, None)
 
 
 @router.websocket("/ws/dashboard/{session_id}")
@@ -126,7 +135,12 @@ async def _handle_detection(websocket: WebSocket, data: dict, ctx) -> None:
     try:
         ts = _parse_timestamp(payload.timestamp)
         ctx.last_activity = datetime.utcnow()
+        # websocket.py 내 동일 위치
         can_snapshot = ctx.can_simulator.get_latest()
+        if can_snapshot is None:
+            can_snapshot = await app_state.repo.get_can_by_frame(
+                session_id, payload.frame_id
+            )
 
         # 객체별 위험도 평가
         max_risk = "safe"

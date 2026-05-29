@@ -207,9 +207,9 @@ class BlacklistRecord(BaseModel):
 class ScoringConfig(BaseModel):
     """스코어링 기준값 설정"""
     config_id: Optional[int] = None
-    accel_threshold: float = Field(default=2.0, description="급출발 가속도 임계값 (m/s²)")
-    brake_threshold: float = Field(default=2.0, description="급제동 감속도 임계값 (m/s²)")
-    speed_limit: float = Field(default=30.0, description="과속 기준 속도 (km/h)")
+    accel_threshold: float = Field(default=3.0, description="급출발 가속도 임계값 (m/s²)")
+    brake_threshold: float = Field(default=3.0, description="급제동 감속도 임계값 (m/s²)")
+    speed_limit: float = Field(default=20.0, description="과속 기준 속도 (km/h)")
     proximity_distance: float = Field(default=0.2, description="근접 판정 거리")
     deduction_sudden_start: float = Field(default=5.0, description="급출발 감점")
     deduction_sudden_brake: float = Field(default=5.0, description="급제동 감점")
@@ -235,7 +235,7 @@ class SessionStartRequest(BaseModel):
     vehicle_id: str
     scenario: Optional[str] = None
     rental_id: Optional[str] = None
-
+    session_id: Optional[str] = None
 
 class SessionStartResponse(BaseModel):
     """세션 시작 응답"""

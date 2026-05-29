@@ -124,6 +124,19 @@ async def lifespan(app: FastAPI):
 
     app_state.alert_manager.set_save_callback(app_state.repo.save_notification)
 
+    # 서버 재시작 시 DB의 active 세션 복원
+    active_sessions = await app_state.db.fetch_all(
+        "SELECT session_id, scenario FROM driving_sessions WHERE status = 'active'"
+    )
+    for row in active_sessions:
+        ctx = app_state.create_session_context(row["session_id"])
+        if row["scenario"]:
+            try:
+                ctx.can_simulator.load_scenario(row["scenario"])
+            except ValueError:
+                pass
+        logger.info(f"세션 복원: {row['session_id']}")
+
     reaper_task = asyncio.create_task(_session_reaper())
 
     logger.info("IDA 서버 준비 완료")

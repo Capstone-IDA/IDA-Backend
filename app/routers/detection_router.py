@@ -48,8 +48,12 @@ async def detect(payload: AIDetectionPayload):
     # timestamp 안전 파싱
     ts = _parse_timestamp(payload.timestamp)
 
-    # CAN 스냅샷 (세션별 시뮬레이터)
+    # CAN 스냅샷: 시뮬레이터 버퍼 우선, 없으면 적재된 DB 데이터 사용
     can_snapshot = ctx.can_simulator.get_latest()
+    if can_snapshot is None:
+        can_snapshot = await app_state.repo.get_can_by_frame(
+            session_id, payload.frame_id
+        )
 
     # 객체별 위험도 평가
     objects_response: list[dict] = []

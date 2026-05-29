@@ -362,7 +362,7 @@ class DatabaseManager:
                     green_min, yellow_min, orange_min,
                     blacklist_threshold, alert_min_interval_sec,
                     event_cooldown_sec, updated_at)
-                   VALUES (2.0, 2.0, 30.0, 0.2, 5.0, 5.0, 10.0, 8.0,
+                   VALUES (3.0, 3.0, 20.0, 0.2, 5.0, 5.0, 10.0, 8.0,
                            80, 50, 30, 30, 30, 3.0, CURRENT_TIMESTAMP)"""
             )
             logger.info("기본 스코어링 설정 삽입 완료")

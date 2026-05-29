@@ -66,17 +66,17 @@ CLASS_CATEGORIES: dict[int, ObjectCategory] = {
     18: ObjectCategory.INFO,
 
     # 정적 장애물
-    1: ObjectCategory.STATIC_OBSTACLE,
-    7: ObjectCategory.STATIC_OBSTACLE,
-    8: ObjectCategory.STATIC_OBSTACLE,
-    13: ObjectCategory.STATIC_OBSTACLE,
-    14: ObjectCategory.STATIC_OBSTACLE,
-    15: ObjectCategory.STATIC_OBSTACLE,
-    16: ObjectCategory.STATIC_OBSTACLE,
-    17: ObjectCategory.STATIC_OBSTACLE,
-    19: ObjectCategory.STATIC_OBSTACLE,
-    20: ObjectCategory.STATIC_OBSTACLE,
-    26: ObjectCategory.STATIC_OBSTACLE,
+    1: ObjectCategory.STATIC_OBSTACLE,   # Wall
+    7: ObjectCategory.STATIC_OBSTACLE,   # Big Notice
+    8: ObjectCategory.STATIC_OBSTACLE,   # Pillar
+    13: ObjectCategory.STATIC_OBSTACLE,  # Speed Bump
+    14: ObjectCategory.STATIC_OBSTACLE,  # Parking Block
+    15: ObjectCategory.INFO,             # Billboard     ← INFO로 변경
+    16: ObjectCategory.STATIC_OBSTACLE,  # Toll Bar
+    17: ObjectCategory.INFO,             # Sign          ← INFO로 변경
+    19: ObjectCategory.STATIC_OBSTACLE,  # Traffic Cone
+    20: ObjectCategory.STATIC_OBSTACLE,  # Fire Extinguisher
+    26: ObjectCategory.STATIC_OBSTACLE,  # Shopping Cart
 
     # 동적 객체
     22: ObjectCategory.DYNAMIC,

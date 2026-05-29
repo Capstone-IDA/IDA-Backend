@@ -384,6 +384,27 @@ class LogRepository:
              snapshot.brake_intensity, snapshot.scenario)
         )
 
+    async def get_can_by_frame(self, session_id: str, frame_number: int) -> Optional[CANSnapshot]:
+        """frame_number 순서 기반으로 can_data_logs에서 해당 행 조회.
+        적재된 CAN 데이터가 있으면 CANSnapshot으로 반환, 없으면 None."""
+        row = await self.db.fetch_one(
+            """SELECT speed_kmh, acceleration, brake_intensity, scenario, timestamp
+            FROM can_data_logs
+            WHERE session_id = ?
+            ORDER BY can_id ASC
+            LIMIT 1 OFFSET ?""",
+            (session_id, frame_number - 1)
+        )
+        if not row:
+            return None
+        return CANSnapshot(
+            timestamp=datetime.fromisoformat(row["timestamp"]),
+            speed_kmh=row["speed_kmh"],
+            acceleration=row["acceleration"],
+            brake_intensity=row["brake_intensity"],
+            scenario=row["scenario"] or "file_playback",
+        )
+
     # ── Frame Image ──
 
     async def save_frame_image(self, session_id: str, frame_number: int,
@@ -457,9 +478,9 @@ class LogRepository:
     async def reset_config(self) -> dict:
         """설정을 기본값으로 리셋"""
         defaults = {
-            "accel_threshold": 2.0,
-            "brake_threshold": 2.0,
-            "speed_limit": 30.0,
+            "accel_threshold": 3.0,
+            "brake_threshold": 3.0,
+            "speed_limit": 20.0,
             "proximity_distance": 0.2,
             "deduction_sudden_start": 5.0,
             "deduction_sudden_brake": 5.0,
