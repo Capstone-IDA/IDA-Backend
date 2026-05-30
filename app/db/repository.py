@@ -34,7 +34,24 @@ class LogRepository:
     async def save_detection(self, session_id: str, timestamp: datetime,
                              frame_number: int, object_count: int,
                              fps: float, inference_time_ms: float) -> int:
-        """탐지 로그 저장, log_id 반환"""
+        """탐지 로그 저장, log_id 반환. 같은 (session, frame)이면 덮어쓴다."""
+        # 동일 프레임의 기존 로그/객체 제거 (재적재 시 중복 누적 방지)
+        existing = await self.db.fetch_all(
+            "SELECT log_id FROM detection_logs WHERE session_id = ? AND frame_number = ?",
+            (session_id, frame_number)
+        )
+        if existing:
+            ids = [r["log_id"] for r in existing]
+            placeholders = ",".join("?" * len(ids))
+            await self.db.execute(
+                f"DELETE FROM detected_objects WHERE log_id IN ({placeholders})",
+                tuple(ids)
+            )
+            await self.db.execute(
+                "DELETE FROM detection_logs WHERE session_id = ? AND frame_number = ?",
+                (session_id, frame_number)
+            )
+
         log_id = await self.db.execute(
             """INSERT INTO detection_logs
                (session_id, timestamp, frame_number, object_count, fps, inference_time_ms)

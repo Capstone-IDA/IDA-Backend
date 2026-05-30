@@ -36,16 +36,15 @@ class RiskEvaluator:
         self.danger_threshold = config.proximity_distance
 
     def assess(self, track_id: int, class_id: int, depth: float,
-                is_moving: bool = True) -> str:
+               is_moving: bool = True) -> str:
+        """객체별 위험도 평가. depth가 작을수록 가깝고 위험.
+        is_moving은 위험도를 올리는 가중 요소. INFO/UNDEFINED는 평가 제외."""
         if get_category(class_id) not in RISK_TARGET_CATEGORIES:
             return "safe"
 
-        # AI depth: 1=가까움, 0=멀다 → 반전
-        inverted = 1.0 - depth
-
-        if inverted <= self.danger_threshold:
+        if depth <= self.danger_threshold:
             return "danger"
-        if inverted <= self.warning_threshold:
+        if depth <= self.warning_threshold:
             return "danger" if is_moving else "warning"
         return "safe"
 
