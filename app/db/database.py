@@ -167,6 +167,7 @@ class DatabaseManager:
             acceleration REAL NOT NULL,
             brake_intensity REAL NOT NULL,
             scenario TEXT,
+            frame_number INTEGER,
             FOREIGN KEY (session_id) REFERENCES driving_sessions(session_id)
         );
 
@@ -258,7 +259,7 @@ class DatabaseManager:
             accel_threshold REAL DEFAULT 2.0,
             brake_threshold REAL DEFAULT 2.0,
             speed_limit REAL DEFAULT 30.0,
-            proximity_distance REAL DEFAULT 0.2,
+            proximity_distance REAL DEFAULT 0.85,
             deduction_sudden_start REAL DEFAULT 5.0,
             deduction_sudden_brake REAL DEFAULT 5.0,
             deduction_proximate REAL DEFAULT 10.0,
@@ -351,6 +352,12 @@ class DatabaseManager:
             await self.execute("ALTER TABLE driving_sessions ADD COLUMN rental_id TEXT")
             logger.info("driving_sessions 테이블에 rental_id 컬럼 추가됨")
 
+        # 기존 DB 호환: can_data_logs.frame_number 컬럼이 없으면 추가
+        can_cols = await self.fetch_all("PRAGMA table_info(can_data_logs)")
+        if not any(c["name"] == "frame_number" for c in can_cols):
+            await self.execute("ALTER TABLE can_data_logs ADD COLUMN frame_number INTEGER")
+            logger.info("can_data_logs 테이블에 frame_number 컬럼 추가됨")
+        
         # 기본 스코어링 설정 삽입 (없을 때만)
         existing = await self.fetch_one("SELECT config_id FROM scoring_config LIMIT 1")
         if not existing:
@@ -362,8 +369,7 @@ class DatabaseManager:
                     green_min, yellow_min, orange_min,
                     blacklist_threshold, alert_min_interval_sec,
                     event_cooldown_sec, updated_at)
-                   VALUES (3.0, 3.0, 20.0, 0.2, 5.0, 5.0, 10.0, 8.0,
-                           80, 50, 30, 30, 30, 3.0, CURRENT_TIMESTAMP)"""
+                    VALUES (3.0, 3.0, 20.0, 0.85, 5.0, 5.0, 10.0, 8.0, 80, 50, 30, 30, 30, 3.0, CURRENT_TIMESTAMP)"""
             )
             logger.info("기본 스코어링 설정 삽입 완료")
 

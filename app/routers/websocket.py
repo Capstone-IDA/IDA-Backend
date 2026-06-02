@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["WebSocket"])
 
 SCORE_INTERVAL = int(os.getenv("IDA_SCORE_INTERVAL", "5"))
-_active_ws: dict[str, WebSocket] = {}  # 추가
+_active_ws: dict[str, WebSocket] = {}
+
 
 @router.websocket("/ws/detect/{session_id}")
 async def ws_detect(websocket: WebSocket, session_id: str):
@@ -135,12 +136,12 @@ async def _handle_detection(websocket: WebSocket, data: dict, ctx) -> None:
     try:
         ts = _parse_timestamp(payload.timestamp)
         ctx.last_activity = datetime.utcnow()
-        # websocket.py 내 동일 위치
-        can_snapshot = ctx.can_simulator.get_latest()
+        # CAN: 사전 적재분 우선, 없으면 시뮬레이터 폴백
+        can_snapshot = await app_state.repo.get_can_by_frame(session_id, payload.frame_id)
+        can_from_sim = False
         if can_snapshot is None:
-            can_snapshot = await app_state.repo.get_can_by_frame(
-                session_id, payload.frame_id
-            )
+            can_snapshot = ctx.can_simulator.get_latest()
+            can_from_sim = can_snapshot is not None
 
         # 객체별 위험도 평가
         max_risk = "safe"
@@ -193,8 +194,10 @@ async def _handle_detection(websocket: WebSocket, data: dict, ctx) -> None:
         )
 
         can_id: Optional[int] = None
-        if can_snapshot:
-            can_id = await app_state.repo.save_can_data(session_id, can_snapshot)
+        if can_snapshot and can_from_sim:
+            can_id = await app_state.repo.save_can_data(
+                session_id, can_snapshot, frame_number=payload.frame_id
+            )
 
         driving_events_out: list[dict] = []
         alerts_out: list[dict] = []

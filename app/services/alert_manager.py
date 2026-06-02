@@ -32,7 +32,7 @@ class AlertManager:
             logger.debug(f"알림 스킵 (min_interval): session={session_id}")
             return
 
-        if grade in ("Red", "Orange"):
+        if grade == "Red":
             await self.send_critical(session_id, score, grade, company_id)
         elif grade == "Yellow":
             await self.send_warning(session_id, score, grade, company_id)

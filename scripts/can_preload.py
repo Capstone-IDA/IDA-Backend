@@ -38,6 +38,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--brake-max", type=float, default=DEFAULT_BRAKE_MAX,
                    help=f"brake_pressure 정규화 기준 최대값 (기본 {DEFAULT_BRAKE_MAX})")
     p.add_argument("--dry-run", action="store_true", help="INSERT 없이 변환 결과만 출력")
+    p.add_argument("--start-index", type=int, default=0,
+                   help="첫 프레임 frame_number (AI frame_id 시작값과 일치, 기본 0)")
     return p.parse_args()
 
 
@@ -101,8 +103,9 @@ async def insert_rows(db_path: str, session_id: str, rows: list[dict]) -> int:
         for row in rows:
             await conn.execute(
                 """INSERT INTO can_data_logs
-                   (session_id, timestamp, speed_kmh, acceleration, brake_intensity, scenario)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                   (session_id, timestamp, speed_kmh, acceleration,
+                    brake_intensity, scenario, frame_number)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     row["timestamp"],
@@ -110,6 +113,7 @@ async def insert_rows(db_path: str, session_id: str, rows: list[dict]) -> int:
                     row["acceleration"],
                     row["brake_intensity"],
                     row["scenario"],
+                    row["frame_number"],
                 ),
             )
             inserted += 1
@@ -139,6 +143,7 @@ async def main() -> None:
     rows = []
     for idx, frame in enumerate(frames):
         row = convert_frame(frame, base_time, idx, args.brake_max, args.scenario)
+        row["frame_number"] = idx + args.start_index
         rows.append(row)
 
     if args.dry_run:

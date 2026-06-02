@@ -210,7 +210,7 @@ class ScoringConfig(BaseModel):
     accel_threshold: float = Field(default=3.0, description="급출발 가속도 임계값 (m/s²)")
     brake_threshold: float = Field(default=3.0, description="급제동 감속도 임계값 (m/s²)")
     speed_limit: float = Field(default=20.0, description="과속 기준 속도 (km/h)")
-    proximity_distance: float = Field(default=0.2, description="근접 판정 거리")
+    proximity_distance: float = Field(default=0.85, description="근접 판정 depth 임계값 (클수록 가까움)")
     deduction_sudden_start: float = Field(default=5.0, description="급출발 감점")
     deduction_sudden_brake: float = Field(default=5.0, description="급제동 감점")
     deduction_proximate: float = Field(default=10.0, description="근접 객체 상태 급가속/급제동 감점")

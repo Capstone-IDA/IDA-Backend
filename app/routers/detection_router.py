@@ -48,12 +48,12 @@ async def detect(payload: AIDetectionPayload):
     # timestamp 안전 파싱
     ts = _parse_timestamp(payload.timestamp)
 
-    # CAN 스냅샷: 시뮬레이터 버퍼 우선, 없으면 적재된 DB 데이터 사용
-    can_snapshot = ctx.can_simulator.get_latest()
+    # CAN 우선순위: 사전 적재(frame 정확 매칭) 우선, 없으면 라이브 시뮬레이터 폴백
+    can_snapshot = await app_state.repo.get_can_by_frame(session_id, payload.frame_id)
+    can_from_sim = False
     if can_snapshot is None:
-        can_snapshot = await app_state.repo.get_can_by_frame(
-            session_id, payload.frame_id
-        )
+        can_snapshot = ctx.can_simulator.get_latest()
+        can_from_sim = can_snapshot is not None
 
     # 객체별 위험도 평가
     objects_response: list[dict] = []
@@ -124,9 +124,12 @@ async def detect(payload: AIDetectionPayload):
     alerts_out: list[dict] = []
     can_id: Optional[int] = None
 
-    if can_snapshot:
-        can_id = await app_state.repo.save_can_data(session_id, can_snapshot)
-
+    # 시뮬레이터가 새로 생성한 CAN만 저장 (적재분은 이미 DB에 있으므로 중복 저장 방지)
+    if can_snapshot and can_from_sim:
+        can_id = await app_state.repo.save_can_data(
+            session_id, can_snapshot, frame_number=payload.frame_id
+        )
+    
     if can_snapshot and should_score:
         event = app_state.risk_evaluator.evaluate_driving_event(
             session_id=session_id,

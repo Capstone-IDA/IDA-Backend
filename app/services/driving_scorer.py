@@ -102,15 +102,12 @@ class DrivingScorer:
             return cfg.deduction_sudden_start
 
     def _classify_grade(self, score: float) -> str:
-        """점수 기반 등급 분류: Green/Yellow/Orange/Red"""
+        """점수 기반 등급 분류: Green/Yellow/Red"""
         if not self.config_cache:
-            # 기본값
             if score >= 80:
                 return "Green"
             elif score >= 50:
                 return "Yellow"
-            elif score >= 30:
-                return "Orange"
             return "Red"
 
         cfg = self.config_cache
@@ -118,6 +115,4 @@ class DrivingScorer:
             return "Green"
         elif score >= cfg.yellow_min:
             return "Yellow"
-        elif score >= cfg.orange_min:
-            return "Orange"
         return "Red"

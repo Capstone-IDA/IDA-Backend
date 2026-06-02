@@ -71,7 +71,7 @@ CLASS_CATEGORIES: dict[int, ObjectCategory] = {
     8: ObjectCategory.STATIC_OBSTACLE,   # Pillar
     13: ObjectCategory.STATIC_OBSTACLE,  # Speed Bump
     14: ObjectCategory.STATIC_OBSTACLE,  # Parking Block
-    15: ObjectCategory.INFO,             # Billboard     ← INFO로 변경
+    15: ObjectCategory.INFO,             # Billboard     ← INFO로 변경s
     16: ObjectCategory.STATIC_OBSTACLE,  # Toll Bar
     17: ObjectCategory.INFO,             # Sign          ← INFO로 변경
     19: ObjectCategory.STATIC_OBSTACLE,  # Traffic Cone
@@ -108,3 +108,44 @@ def is_risk_target(class_id: int) -> bool:
 def get_class_name(class_id: int) -> str:
     """클래스 ID로 클래스명 반환"""
     return CLASS_NAMES.get(class_id, f"class_{class_id}")
+
+# 클래스 ID -> 한글 표시명 (없으면 영문 폴백)
+CLASS_NAMES_KO: dict[int, str] = {
+    1: "벽", 8: "기둥", 7: "안내판", 13: "과속방지턱", 14: "주차블록",
+    16: "차단바", 19: "라바콘", 20: "소화기", 26: "쇼핑카트",
+    15: "광고판", 17: "표지판",
+    22: "이륜차", 23: "차량", 24: "휠체어", 25: "유모차", 27: "동물", 28: "사람",
+}
+
+# 영문 클래스명 -> ID 역매핑
+_NAME_TO_ID: dict[str, int] = {v: k for k, v in CLASS_NAMES.items()}
+
+# 항상 그리는 정적 객체 (danger일 때만)
+_STATIC_SHOW_WHEN_DANGER: set[int] = {1, 8}  # Wall, Pillar
+
+
+def get_korean_name(class_name: str) -> str:
+    """영문 클래스명을 한글 표시명으로 변환."""
+    cid = _NAME_TO_ID.get(class_name)
+    if cid is None:
+        return class_name
+    return CLASS_NAMES_KO.get(cid, class_name)
+
+
+def get_category_by_name(class_name: str) -> ObjectCategory:
+    """영문 클래스명으로 카테고리 반환."""
+    cid = _NAME_TO_ID.get(class_name)
+    return get_category(cid) if cid is not None else ObjectCategory.UNDEFINED
+
+
+def should_display(class_name: str, risk_level: str) -> bool:
+    """bbox 화면 표시 여부. 동적은 항상, 벽/기둥은 danger만, 나머지는 숨김."""
+    cid = _NAME_TO_ID.get(class_name)
+    if cid is None:
+        return False
+    category = get_category(cid)
+    if category == ObjectCategory.DYNAMIC:
+        return True
+    if category == ObjectCategory.STATIC_OBSTACLE and cid in _STATIC_SHOW_WHEN_DANGER:
+        return risk_level.lower() == "danger"
+    return False

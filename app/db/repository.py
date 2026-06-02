@@ -200,7 +200,7 @@ class LogRepository:
         return await self.db.fetch_one(
             """SELECT * FROM score_history
                WHERE session_id = ?
-               ORDER BY timestamp DESC LIMIT 1""",
+               ORDER BY score_id DESC LIMIT 1""",
             (session_id,)
         )
 
@@ -209,7 +209,7 @@ class LogRepository:
         return await self.db.fetch_all(
             """SELECT * FROM score_history
                WHERE session_id = ?
-               ORDER BY timestamp""",
+               ORDER BY score_id""",
             (session_id,)
         )
 
@@ -389,28 +389,28 @@ class LogRepository:
 
     # ── CAN Data ──
 
-    async def save_can_data(self, session_id: str, snapshot: CANSnapshot) -> int:
+    async def save_can_data(self, session_id: str, snapshot: CANSnapshot,
+                            frame_number: Optional[int] = None) -> int:
         """CAN 데이터 저장, can_id 반환"""
         return await self.db.execute(
             """INSERT INTO can_data_logs
                (session_id, timestamp, speed_kmh, acceleration,
-                brake_intensity, scenario)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+                brake_intensity, scenario, frame_number)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (session_id, snapshot.timestamp.isoformat(),
              snapshot.speed_kmh, snapshot.acceleration,
-             snapshot.brake_intensity, snapshot.scenario)
+             snapshot.brake_intensity, snapshot.scenario, frame_number)
         )
 
     async def get_can_by_frame(self, session_id: str, frame_number: int) -> Optional[CANSnapshot]:
-        """frame_number 순서 기반으로 can_data_logs에서 해당 행 조회.
-        적재된 CAN 데이터가 있으면 CANSnapshot으로 반환, 없으면 None."""
+        """frame_number로 정확 매칭하여 적재된 CAN 조회. 없으면 None."""
         row = await self.db.fetch_one(
             """SELECT speed_kmh, acceleration, brake_intensity, scenario, timestamp
-            FROM can_data_logs
-            WHERE session_id = ?
-            ORDER BY can_id ASC
-            LIMIT 1 OFFSET ?""",
-            (session_id, frame_number - 1)
+               FROM can_data_logs
+               WHERE session_id = ? AND frame_number = ?
+               ORDER BY can_id ASC
+               LIMIT 1""",
+            (session_id, frame_number)
         )
         if not row:
             return None
@@ -498,7 +498,7 @@ class LogRepository:
             "accel_threshold": 3.0,
             "brake_threshold": 3.0,
             "speed_limit": 20.0,
-            "proximity_distance": 0.2,
+            "proximity_distance": 0.85,
             "deduction_sudden_start": 5.0,
             "deduction_sudden_brake": 5.0,
             "deduction_proximate": 10.0,
@@ -589,7 +589,9 @@ class LogRepository:
     async def get_logs(self, session_id: Optional[str] = None,
                    start: Optional[datetime] = None,
                    end: Optional[datetime] = None,
-                   limit: int = 100) -> list[dict]:
+                   start_frame: Optional[int] = None,
+                   end_frame: Optional[int] = None,
+                   limit: int = 2000) -> list[dict]:
         """프레임별 탐지 로그 조회 (detected_objects 포함)"""
         where_clauses = ["1=1"]
         params: list = []
@@ -603,6 +605,12 @@ class LogRepository:
         if end:
             where_clauses.append("dl.timestamp <= ?")
             params.append(end.isoformat())
+        if start_frame is not None:
+            where_clauses.append("dl.frame_number >= ?")
+            params.append(start_frame)
+        if end_frame is not None:
+            where_clauses.append("dl.frame_number <= ?")
+            params.append(end_frame)
 
         where = " AND ".join(where_clauses)
 
