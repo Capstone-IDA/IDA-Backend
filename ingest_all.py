@@ -1,9 +1,9 @@
 """시나리오 다건 병렬 적재. 파일별 depth 컨벤션 자동 판별 후 high=close로 정규화."""
 import json
 import statistics as st
-import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 import requests
 
@@ -14,6 +14,7 @@ SCENARIOS = [
     ("시나리오1.json", "scenario_1"),
     ("시나리오2.json", "scenario_2"),
     ("시나리오3.json", "scenario_3"),
+    ("시나리오4.json", "scenario_4"),
 ]
 
 
@@ -38,8 +39,8 @@ def detect_convention(frames):
     return st.mean(vals) if vals else 0.0
 
 
-def ingest(path, label):
-    """한 시나리오를 한 세션에 순서대로 적재."""
+def ingest(path, label, sid):
+    """한 시나리오를 지정된 세션에 순서대로 적재."""
     data = json.load(open(path, encoding="utf-8"))
     frames = data["frames"] if isinstance(data, dict) and "frames" in data else data
 
@@ -51,10 +52,9 @@ def ingest(path, label):
         "user_id": f"user_{label}",
         "vehicle_id": f"car_{label}",
         "scenario": label,
-        "session_id": f"sess_{label}_{uuid.uuid4().hex[:6]}",
+        "session_id": sid,
     }, timeout=15)
     r.raise_for_status()
-    sid = r.json()["session_id"]
 
     ok = 0
     for i, fr in enumerate(frames):
@@ -72,17 +72,24 @@ def ingest(path, label):
         else:
             print(f"[{label}] frame {payload.get('frame_id')} 실패: {resp.status_code}")
 
-    lr = requests.get(f"{BASE}/logs", params={"session_id": sid, "limit": 2000}, timeout=20)
+    lr = requests.get(f"{BASE}/logs", params={"session_id": sid, "limit": 3000}, timeout=20)
     flogs = lr.json()["frames"]
     danger = sum(1 for f in flogs if any(o["risk_level"] == "danger" for o in f["objects"]))
     return label, sid, ok, len(frames), danger
 
 
 def main():
-    print(f"{len(SCENARIOS)}개 시나리오 병렬 적재 시작\n")
+    runtag = datetime.now().strftime("%m%d_%H%M%S")
+    jobs = [(path, label, f"sess_{label}_{runtag}") for path, label in SCENARIOS]
+
+    print("이번 적재 세션 ID:")
+    for path, label, sid in jobs:
+        print(f"  {label}: {sid}")
+    print(f"\n{len(jobs)}개 시나리오 병렬 적재 시작\n")
+
     results = []
-    with ThreadPoolExecutor(max_workers=len(SCENARIOS)) as ex:
-        futures = [ex.submit(ingest, path, label) for path, label in SCENARIOS]
+    with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
+        futures = [ex.submit(ingest, p, lb, sid) for p, lb, sid in jobs]
         for fut in as_completed(futures):
             results.append(fut.result())
 
@@ -93,4 +100,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    

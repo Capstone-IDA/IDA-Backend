@@ -90,6 +90,7 @@ class DatabaseManager:
             user_id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             phone TEXT,
+            license TEXT,
             company_id TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (company_id) REFERENCES companies(company_id)
@@ -102,6 +103,7 @@ class DatabaseManager:
             model TEXT,
             company_id TEXT,
             year TEXT,
+            status TEXT DEFAULT 'available',
             FOREIGN KEY (company_id) REFERENCES companies(company_id)
         );
 
@@ -313,7 +315,8 @@ class DatabaseManager:
             ON alert_records(session_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_accounts_username
             ON accounts(username);
-         -- 프레임 이미지 저장
+
+        -- 프레임 이미지 저장
         CREATE TABLE IF NOT EXISTS frame_images (
             image_id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL,
@@ -357,7 +360,19 @@ class DatabaseManager:
         if not any(c["name"] == "frame_number" for c in can_cols):
             await self.execute("ALTER TABLE can_data_logs ADD COLUMN frame_number INTEGER")
             logger.info("can_data_logs 테이블에 frame_number 컬럼 추가됨")
-        
+
+        # 기존 DB 호환: users.license 컬럼이 없으면 추가
+        user_cols2 = await self.fetch_all("PRAGMA table_info(users)")
+        if not any(c["name"] == "license" for c in user_cols2):
+            await self.execute("ALTER TABLE users ADD COLUMN license TEXT")
+            logger.info("users 테이블에 license 컬럼 추가됨")
+
+        # 기존 DB 호환: vehicles.status 컬럼이 없으면 추가
+        veh_cols = await self.fetch_all("PRAGMA table_info(vehicles)")
+        if not any(c["name"] == "status" for c in veh_cols):
+            await self.execute("ALTER TABLE vehicles ADD COLUMN status TEXT DEFAULT 'available'")
+            logger.info("vehicles 테이블에 status 컬럼 추가됨")
+
         # 기본 스코어링 설정 삽입 (없을 때만)
         existing = await self.fetch_one("SELECT config_id FROM scoring_config LIMIT 1")
         if not existing:
@@ -407,4 +422,84 @@ class DatabaseManager:
             )
             logger.info("기본 계정 시드 완료 (admin / sky_rental / jeju_rental)")
 
+        await self.seed_demo_data()
         logger.info("DB 테이블 초기화 완료")
+
+    async def seed_demo_data(self) -> None:
+        """데모용 고객/차량/블랙리스트 시드 (매 부팅 idempotent)"""
+        companies = [
+            ("comp_sky", "스카이렌터카", "02-1234-5678"),
+            ("comp_jeju", "제주렌터카", "064-9876-5432"),
+        ]
+        for cid, name, contact in companies:
+            await self.execute(
+                "INSERT OR IGNORE INTO companies (company_id, name, contact) VALUES (?, ?, ?)",
+                (cid, name, contact),
+            )
+
+        users = [
+            ("user_sky_01", "김철수", "010-1234-5678", "경기-12-345678", "comp_sky"),
+            ("user_sky_02", "이영희", "010-9876-5432", "서울-08-112233", "comp_sky"),
+            ("user_sky_03", "홍길동", "010-2345-6789", "서울-22-334455", "comp_sky"),
+            ("user_sky_04", "이민재", "010-3456-7890", "경기-09-778899", "comp_sky"),
+            ("user_jeju_01", "박민수", "010-5555-1234", "인천-15-667788", "comp_jeju"),
+            ("user_jeju_02", "최지현", "010-2233-4455", "경남-03-990011", "comp_jeju"),
+            ("user_jeju_03", "강동원", "010-4567-8901", "부산-14-223344", "comp_jeju"),
+            ("user_jeju_04", "박서준", "010-5678-9012", "제주-07-112233", "comp_jeju"),
+        ]
+        for uid, name, phone, license_no, cid in users:
+            await self.execute(
+                """INSERT OR IGNORE INTO users (user_id, name, phone, license, company_id)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (uid, name, phone, license_no, cid),
+            )
+
+        # status: rented 대여중, available 대기, maintenance 정비중
+        vehicles = [
+            ("veh_sky_01", "12가 3456", "현대 아반떼", "2024", "rented", "comp_sky"),
+            ("veh_sky_02", "34나 7890", "기아 K5", "2023", "rented", "comp_sky"),
+            ("veh_sky_03", "56다 1234", "현대 쏘나타", "2024", "available", "comp_sky"),
+            ("veh_sky_04", "78라 5678", "기아 셀토스", "2025", "maintenance", "comp_sky"),
+            ("veh_sky_05", "90마 9012", "현대 투싼", "2023", "available", "comp_sky"),
+            ("veh_jeju_01", "11바 1234", "기아 카니발", "2024", "rented", "comp_jeju"),
+            ("veh_jeju_02", "22사 5678", "현대 스타리아", "2023", "rented", "comp_jeju"),
+            ("veh_jeju_03", "33아 9012", "기아 쏘렌토", "2024", "available", "comp_jeju"),
+            ("veh_jeju_04", "44아 3456", "현대 팰리세이드", "2025", "available", "comp_jeju"),
+        ]
+        for vid, plate, model, year, status, cid in vehicles:
+            await self.execute(
+                """INSERT OR IGNORE INTO vehicles
+                   (vehicle_id, plate_number, model, year, status, company_id)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (vid, plate, model, year, status, cid),
+            )
+
+        # 블랙리스트는 업체 필터가 session-vehicle-company JOIN이라 더미 세션 필요
+        # grade: blacklisted 제한, caution 관찰 중
+        blacklist = [
+            ("bl_sess_sky_03", "user_sky_03", "veh_sky_03", 18.0, "blacklisted"),
+            ("bl_sess_sky_04", "user_sky_04", "veh_sky_05", 29.0, "caution"),
+            ("bl_sess_jeju_03", "user_jeju_03", "veh_jeju_03", 21.0, "blacklisted"),
+            ("bl_sess_jeju_04", "user_jeju_04", "veh_jeju_04", 34.0, "caution"),
+        ]
+        for sess_id, uid, vid, score, grade in blacklist:
+            await self.execute(
+                """INSERT OR IGNORE INTO driving_sessions
+                   (session_id, user_id, vehicle_id, start_time, status)
+                   VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'completed')""",
+                (sess_id, uid, vid),
+            )
+            existing = await self.fetch_one(
+                "SELECT blacklist_id FROM blacklist WHERE user_id = ? AND is_active = 1",
+                (uid,),
+            )
+            if not existing:
+                await self.execute(
+                    """INSERT INTO blacklist
+                       (user_id, session_id, final_score, blacklist_grade,
+                        created_at, is_active, history_count)
+                       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 1, 1)""",
+                    (uid, sess_id, score, grade),
+                )
+
+        logger.info("데모 데이터 시드 완료 (고객 8 / 차량 9 / 블랙리스트 4)")

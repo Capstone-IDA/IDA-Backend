@@ -703,12 +703,14 @@ class LogRepository:
     # Vehicles
 
     async def create_vehicle(self, vehicle_id: str, plate_number: str,
-                             model: Optional[str], company_id: Optional[str]) -> int:
+                             model: Optional[str], company_id: Optional[str],
+                             year: Optional[str] = None,
+                             status: Optional[str] = "available") -> int:
         """차량 신규 등록"""
         return await self.db.execute(
-            """INSERT INTO vehicles (vehicle_id, plate_number, model, company_id)
-               VALUES (?, ?, ?, ?)""",
-            (vehicle_id, plate_number, model, company_id)
+            """INSERT INTO vehicles (vehicle_id, plate_number, model, year, status, company_id)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (vehicle_id, plate_number, model, year, status, company_id)
         )
 
     async def get_vehicle_by_id(self, vehicle_id: str) -> Optional[dict]:
@@ -737,12 +739,13 @@ class LogRepository:
     # Users (고객)
 
     async def create_user(self, user_id: str, name: str,
-                          phone: Optional[str], company_id: Optional[str]) -> int:
+                          phone: Optional[str], company_id: Optional[str],
+                          license: Optional[str] = None) -> int:
         """고객 신규 등록"""
         return await self.db.execute(
-            """INSERT INTO users (user_id, name, phone, company_id)
-               VALUES (?, ?, ?, ?)""",
-            (user_id, name, phone, company_id)
+            """INSERT INTO users (user_id, name, phone, license, company_id)
+               VALUES (?, ?, ?, ?, ?)""",
+            (user_id, name, phone, license, company_id)
         )
 
     async def get_user_by_id(self, user_id: str) -> Optional[dict]:

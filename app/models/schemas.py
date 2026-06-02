@@ -360,6 +360,7 @@ class VehicleCreateRequest(BaseModel):
     model: Optional[str] = None
     company_id: Optional[str] = Field(default=None, description="Admin 전용. Company 계정은 자기 업체로 자동 설정")
     year: Optional[str] = None
+    status: Optional[str] = Field(default="available", description="rented / available / maintenance")
 
 
 class VehicleInfo(BaseModel):
@@ -370,6 +371,7 @@ class VehicleInfo(BaseModel):
     company_id: Optional[str] = None
     company_name: Optional[str] = None
     year: Optional[str] = None
+    status: Optional[str] = None
 
 
 class CustomerCreateRequest(BaseModel):

@@ -143,6 +143,8 @@ async def create_company_vehicle(
         plate_number=req.plate_number,
         model=req.model,
         company_id=company_id,
+        year=req.year,
+        status=req.status,
     )
 
     return VehicleInfo(
@@ -151,6 +153,8 @@ async def create_company_vehicle(
         model=req.model,
         company_id=company_id,
         company_name=exists["name"],
+        year=req.year,
+        status=req.status,
     )
 
 
@@ -194,6 +198,7 @@ async def create_company_customer(
         name=req.name,
         phone=req.phone,
         company_id=company_id,
+        license=req.license,
     )
 
     row = await app_state.repo.get_user_by_id(user_id)
@@ -204,6 +209,7 @@ async def create_company_customer(
         company_id=company_id,
         company_name=exists["name"],
         created_at=row.get("created_at") if row else None,
+        license=req.license,
     )
 
 
