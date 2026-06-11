@@ -28,13 +28,16 @@ class LogRepository:
 
     def __init__(self, db: DatabaseManager):
         self.db = db
+        self._collision_ready_conn = None
 
     # ── Detection ──
 
     async def save_detection(self, session_id: str, timestamp: datetime,
                              frame_number: int, object_count: int,
-                             fps: float, inference_time_ms: float) -> int:
+                             fps: float, inference_time_ms: float,
+                             collision_warning: bool = False) -> int:
         """탐지 로그 저장, log_id 반환. 같은 (session, frame)이면 덮어쓴다."""
+        await self._ensure_collision_column()
         # 동일 프레임의 기존 로그/객체 제거 (재적재 시 중복 누적 방지)
         existing = await self.db.fetch_all(
             "SELECT log_id FROM detection_logs WHERE session_id = ? AND frame_number = ?",
@@ -54,10 +57,11 @@ class LogRepository:
 
         log_id = await self.db.execute(
             """INSERT INTO detection_logs
-               (session_id, timestamp, frame_number, object_count, fps, inference_time_ms)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               (session_id, timestamp, frame_number, object_count,
+                fps, inference_time_ms, collision_warning)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (session_id, timestamp.isoformat(), frame_number, object_count,
-             fps, inference_time_ms)
+             fps, inference_time_ms, int(collision_warning))
         )
         return log_id
 
@@ -78,6 +82,31 @@ class LogRepository:
              bbox_x, bbox_y, bbox_w, bbox_h,
              depth_value, distance_zone, risk_level)
         )
+
+    async def _ensure_collision_column(self) -> None:
+        """detection_logs.collision_warning 컬럼 보장, 없으면 추가"""
+        if self._collision_ready_conn is self.db.connection:
+            return
+        cols = await self.db.fetch_all("PRAGMA table_info(detection_logs)")
+        names = {c["name"] for c in cols}
+        if "collision_warning" not in names:
+            await self.db.execute(
+                "ALTER TABLE detection_logs"
+                " ADD COLUMN collision_warning INTEGER NOT NULL DEFAULT 0",
+                ()
+            )
+            logger.info("detection_logs.collision_warning 컬럼 추가")
+        self._collision_ready_conn = self.db.connection
+
+    async def get_session_company(self, session_id: str) -> Optional[str]:
+        """세션 소속 업체 조회 (차량 경유)"""
+        row = await self.db.fetch_one(
+            """SELECT v.company_id FROM driving_sessions s
+               LEFT JOIN vehicles v ON s.vehicle_id = v.vehicle_id
+               WHERE s.session_id = ?""",
+            (session_id,)
+        )
+        return row["company_id"] if row else None
 
     async def get_stats(self, session_id: Optional[str] = None,
                         start: Optional[datetime] = None,
@@ -499,6 +528,8 @@ class LogRepository:
             "brake_threshold": 3.0,
             "speed_limit": 20.0,
             "proximity_distance": 0.85,
+            "area_danger_ratio": 0.20,
+            "area_warning_ratio": 0.08,
             "deduction_sudden_start": 5.0,
             "deduction_sudden_brake": 5.0,
             "deduction_proximate": 10.0,
@@ -593,6 +624,7 @@ class LogRepository:
                    end_frame: Optional[int] = None,
                    limit: int = 2000) -> list[dict]:
         """프레임별 탐지 로그 조회 (detected_objects 포함)"""
+        await self._ensure_collision_column()
         where_clauses = ["1=1"]
         params: list = []
 
@@ -616,7 +648,8 @@ class LogRepository:
 
         frames = await self.db.fetch_all(
             f"""SELECT dl.log_id, dl.session_id, dl.frame_number,
-                    dl.timestamp, dl.object_count, dl.fps, dl.inference_time_ms
+                    dl.timestamp, dl.object_count, dl.fps,
+                    dl.inference_time_ms, dl.collision_warning
                 FROM detection_logs dl
                 WHERE {where}
                 ORDER BY dl.frame_number ASC

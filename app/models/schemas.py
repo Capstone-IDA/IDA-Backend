@@ -211,6 +211,8 @@ class ScoringConfig(BaseModel):
     brake_threshold: float = Field(default=3.0, description="급제동 감속도 임계값 (m/s²)")
     speed_limit: float = Field(default=20.0, description="과속 기준 속도 (km/h)")
     proximity_distance: float = Field(default=0.85, description="근접 판정 depth 임계값 (클수록 가까움)")
+    area_danger_ratio: float = Field(default=0.20, description="화면 점유율 기반 근접 danger 임계값 (bbox_area_ratio)")
+    area_warning_ratio: float = Field(default=0.08, description="화면 점유율 기반 근접 warning 임계값 (bbox_area_ratio)")
     deduction_sudden_start: float = Field(default=5.0, description="급출발 감점")
     deduction_sudden_brake: float = Field(default=5.0, description="급제동 감점")
     deduction_proximate: float = Field(default=10.0, description="근접 객체 상태 급가속/급제동 감점")
@@ -288,6 +290,8 @@ class ConfigUpdateRequest(BaseModel):
     brake_threshold: Optional[float] = None
     speed_limit: Optional[float] = None
     proximity_distance: Optional[float] = None
+    area_danger_ratio: Optional[float] = None
+    area_warning_ratio: Optional[float] = None
     deduction_sudden_start: Optional[float] = None
     deduction_sudden_brake: Optional[float] = None
     deduction_proximate: Optional[float] = None

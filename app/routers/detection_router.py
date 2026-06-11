@@ -18,6 +18,7 @@ from app.models.schemas import (
     CANSnapshot,
     DetectionApiResponse,
     HealthStatus,
+    NotificationLog,
     ScoreRecord,
     ScoringConfig,
     WSFrameResultMessage,
@@ -66,12 +67,20 @@ async def detect(payload: AIDetectionPayload):
             class_id=obj.class_id,
             depth=obj.depth_val,
             is_moving=obj.is_moving,
+            bbox_area_ratio=obj.bbox_area_ratio,
+            bbox_h=obj.bbox.h,
+            bbox_y2=obj.bbox.y + obj.bbox.h,
         )
         if _risk_priority(risk_level) > _risk_priority(max_risk):
             max_risk = risk_level
             worst_track_id = obj.track_id
 
         objects_response.append(build_object_view(obj, risk_level))
+
+    # 프레임 단위 추돌 경고 갱신: danger 객체가 연속 유지되면 활성, FE 배너 신호
+    collision_active, collision_notify = app_state.risk_evaluator.update_collision_state(
+        session_id, max_risk == "danger", payload.frame_id
+    )
 
     # 탐지 로그 저장 (매 프레임)
     log_id = await app_state.repo.save_detection(
@@ -81,6 +90,7 @@ async def detect(payload: AIDetectionPayload):
         object_count=len(payload.objects),
         fps=round(payload.fps, 1),
         inference_time_ms=round(payload.inference_time_ms, 2),
+        collision_warning=collision_active,
     )
 
     # 프레임 이미지 저장 (AI가 base64로 실어서 보낸 경우)
@@ -123,6 +133,29 @@ async def detect(payload: AIDetectionPayload):
     driving_events_out: list[dict] = []
     alerts_out: list[dict] = []
     can_id: Optional[int] = None
+
+    # 추돌 경고 신규 진입 시 알림 1건 기록 (에피소드당 1회, 최소 간격 적용)
+    if collision_notify:
+        alerts_out.append({
+            "type": "collision_warning",
+            "frame_id": payload.frame_id,
+            "track_id": worst_track_id,
+            "message": "추돌 주의: 근접 장애물 감지",
+        })
+        try:
+            company_id = await app_state.repo.get_session_company(session_id)
+            await app_state.repo.save_notification(NotificationLog(
+                session_id=session_id,
+                timestamp=ts,
+                grade=ctx.scorer.get_grade(),
+                score=ctx.scorer.current_score,
+                notification_type="collision_warning",
+                company_id=company_id,
+                status="sent",
+                retry_count=0,
+            ))
+        except Exception as e:
+            logger.warning(f"추돌 경고 알림 저장 실패 frame={payload.frame_id}: {e}")
 
     # 시뮬레이터가 새로 생성한 CAN만 저장 (적재분은 이미 DB에 있으므로 중복 저장 방지)
     if can_snapshot and can_from_sim:
@@ -213,6 +246,7 @@ async def detect(payload: AIDetectionPayload):
             "object_count": len(payload.objects),
             "max_risk_level": max_risk.upper(),
             "score_triggered": should_score,
+            "collision_warning": collision_active,
         },
         can=can_snapshot,
         ego_motion=payload.ego_motion,

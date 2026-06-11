@@ -43,7 +43,8 @@ def _end_session(client: TestClient, session_id: str) -> None:
 
 
 def _detection_msg(frame_id: int, depth: float = 0.5,
-                   is_moving: bool = True) -> dict:
+                   is_moving: bool = True,
+                   area: float = 0.04) -> dict:
     """detection 메시지 생성"""
     return {
         "type": "detection",
@@ -60,7 +61,7 @@ def _detection_msg(frame_id: int, depth: float = 0.5,
                 "confidence": 0.9,
                 "bbox": {"x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2},
                 "depth_val": depth,
-                "bbox_area_ratio": 0.04,
+                "bbox_area_ratio": area,
                 "bbox_velocity_x": 0.01,
                 "bbox_velocity_y": 0.0,
                 "obj_speed_px": 0.01,
@@ -159,7 +160,7 @@ def test_ws_detection_to_event_push(ws_client: TestClient):
         with ws_client.websocket_connect(f"/ws/detect/{session_id}") as ws:
             ws.receive_json()  # connected
 
-            ws.send_json(_detection_msg(frame_id=1, depth=0.1, is_moving=True))
+            ws.send_json(_detection_msg(frame_id=1, depth=0.1, is_moving=True, area=0.25))
 
             msg = ws.receive_json()
             assert msg["type"] == "driving_event"

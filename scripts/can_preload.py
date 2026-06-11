@@ -67,14 +67,15 @@ def convert_frame(frame: dict, base_time: datetime,
 
     매핑:
         speed_kmh      <- aim_micom.gps_vss         (단위: km/h, 직접 사용)
-        acceleration   <- aim_gsensor.accYAve        (단위: m/s², 전후 방향)
+        acceleration   <- aim_gsensor.accXAve        (단위: m/s², 전후 방향)
         brake_intensity <- aim_micom.brake_pressure / brake_max  (0.0 ~ 1.0)
     """
     gsensor = frame.get("aim_gsensor", {})
     micom = frame.get("aim_micom", {})
 
     speed_kmh = float(micom.get("gps_vss", 0))
-    acc_y = float(gsensor.get("accYAve", 0.0))
+    # accYAve는 횡방향(코너링) 축이라 급제동 판정에 쓰면 안 됨
+    acc_x = float(gsensor.get("accXAve", 0.0))
     brake_raw = float(micom.get("brake_pressure", 0))
     brake_intensity = min(1.0, brake_raw / brake_max) if brake_max > 0 else 0.0
 
@@ -83,7 +84,7 @@ def convert_frame(frame: dict, base_time: datetime,
     return {
         "timestamp": ts.isoformat(),
         "speed_kmh": round(speed_kmh, 2),
-        "acceleration": round(acc_y, 3),
+        "acceleration": round(acc_x, 3),
         "brake_intensity": round(brake_intensity, 4),
         "scenario": scenario,
     }

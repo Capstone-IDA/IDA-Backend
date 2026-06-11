@@ -154,6 +154,7 @@ async def _handle_detection(websocket: WebSocket, data: dict, ctx) -> None:
                 class_id=obj.class_id,
                 depth=obj.depth_val,
                 is_moving=obj.is_moving,
+                bbox_area_ratio=obj.bbox_area_ratio,
             )
             if _risk_priority(risk_level) > _risk_priority(max_risk):
                 max_risk = risk_level

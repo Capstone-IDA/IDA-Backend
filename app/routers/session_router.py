@@ -26,6 +26,15 @@ async def start_session(req: SessionStartRequest):
 
     session_id = req.session_id or f"sess_{uuid.uuid4().hex[:12]}"
 
+    # 동일 ID 세션이 이미 있으면 명시적 충돌 응답 (재적재 전 cleanup 필요)
+    existing = await app_state.repo.get_session(session_id)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"이미 존재하는 session_id입니다: {session_id}. "
+                   "재사용하려면 cleanup_sessions.py로 기존 세션 데이터를 삭제한 뒤 다시 시작하세요.",
+        )
+
     # DB 세션 생성
     await app_state.repo.create_session(
         session_id=session_id,
@@ -37,6 +46,9 @@ async def start_session(req: SessionStartRequest):
 
     # 세션 런타임 컨텍스트 생성 (점수, CAN, 프레임 카운터)
     ctx = app_state.create_session_context(session_id)
+
+    # 이전 추돌 경고 상태 초기화 (재적재 시 streak 오염 방지)
+    app_state.risk_evaluator.reset_collision_state(session_id)
 
     # CAN 시나리오 설정 (선택)
     if req.scenario:
@@ -68,6 +80,9 @@ async def finalize_session(session_id: str) -> Optional[dict]:
     ctx = app_state.sessions.get(session_id)
     if ctx:
         ctx.can_simulator.stop()
+
+    # 추돌 경고 상태 제거
+    app_state.risk_evaluator.reset_collision_state(session_id)
 
     # 세션 종료
     await app_state.repo.end_session(session_id)

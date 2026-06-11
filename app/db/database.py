@@ -130,6 +130,7 @@ class DatabaseManager:
             object_count INTEGER DEFAULT 0,
             fps REAL,
             inference_time_ms REAL,
+            collision_warning INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (session_id) REFERENCES driving_sessions(session_id)
         );
 
@@ -262,6 +263,8 @@ class DatabaseManager:
             brake_threshold REAL DEFAULT 2.0,
             speed_limit REAL DEFAULT 30.0,
             proximity_distance REAL DEFAULT 0.85,
+            area_danger_ratio REAL DEFAULT 0.20,
+            area_warning_ratio REAL DEFAULT 0.08,
             deduction_sudden_start REAL DEFAULT 5.0,
             deduction_sudden_brake REAL DEFAULT 5.0,
             deduction_proximate REAL DEFAULT 10.0,
@@ -349,6 +352,18 @@ class DatabaseManager:
             )
             logger.info("scoring_config 테이블에 event_cooldown_sec 컬럼 추가됨")
 
+        # 기존 DB 호환: scoring_config 면적 임계값 컬럼이 없으면 추가
+        if not any(c["name"] == "area_danger_ratio" for c in cfg_cols):
+            await self.execute(
+                "ALTER TABLE scoring_config ADD COLUMN area_danger_ratio REAL DEFAULT 0.20"
+            )
+            logger.info("scoring_config 테이블에 area_danger_ratio 컬럼 추가됨")
+        if not any(c["name"] == "area_warning_ratio" for c in cfg_cols):
+            await self.execute(
+                "ALTER TABLE scoring_config ADD COLUMN area_warning_ratio REAL DEFAULT 0.08"
+            )
+            logger.info("scoring_config 테이블에 area_warning_ratio 컬럼 추가됨")
+
         # 기존 DB 호환: driving_sessions.rental_id 컬럼이 없으면 추가
         sess_cols = await self.fetch_all("PRAGMA table_info(driving_sessions)")
         if not any(c["name"] == "rental_id" for c in sess_cols):
@@ -379,12 +394,13 @@ class DatabaseManager:
             await self.execute(
                 """INSERT INTO scoring_config
                    (accel_threshold, brake_threshold, speed_limit, proximity_distance,
+                    area_danger_ratio, area_warning_ratio,
                     deduction_sudden_start, deduction_sudden_brake,
                     deduction_proximate, deduction_overspeeding,
                     green_min, yellow_min, orange_min,
                     blacklist_threshold, alert_min_interval_sec,
                     event_cooldown_sec, updated_at)
-                    VALUES (3.0, 3.0, 20.0, 0.85, 5.0, 5.0, 10.0, 8.0, 80, 50, 30, 30, 30, 3.0, CURRENT_TIMESTAMP)"""
+                    VALUES (3.0, 3.0, 20.0, 0.85, 0.20, 0.08, 5.0, 5.0, 10.0, 8.0, 80, 50, 30, 30, 30, 3.0, CURRENT_TIMESTAMP)"""
             )
             logger.info("기본 스코어링 설정 삽입 완료")
 
